@@ -4,7 +4,7 @@ import logging
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google import genai
 from google.genai import types
 
@@ -77,6 +77,17 @@ def format_response(raw: str) -> str:
     return "\n".join(parts)
 
 
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "👋 Привет! Я бот для расшифровки голосовых сообщений и кружочков.\n\n"
+        "Просто отправь мне 🎙 голосовое или 🔵 кружочек — я:\n"
+        "• переведу речь в текст (транскрипция)\n"
+        "• сделаю краткое содержание\n"
+        "• для кружочков учту и то, что видно на видео\n\n"
+        "Работаю в личных сообщениях и в группах.",
+    )
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
 
@@ -136,6 +147,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
 
