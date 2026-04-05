@@ -1,6 +1,7 @@
 import html
 import os
 import logging
+import time
 from datetime import date
 
 from telegram import Update
@@ -22,6 +23,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
+RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 
 # Gemini clients — основной + резервный
 gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
@@ -30,7 +32,7 @@ if GEMINI_API_KEY_2:
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
-# user_id → "both" | "transcription_only" | "summary_only"
+# user_id → "both" | "transcription_only" | "summary_only" | "tldr"
 user_modes: dict[int, str] = {}
 
 # user_id → "auto" | "ru" | "en" | "de" | ...
@@ -38,6 +40,9 @@ user_languages: dict[int, str] = {}
 
 # user_ids которых бот игнорирует
 ignored_users: set[int] = set()
+
+# Rate limiting: user_id → [timestamp, ...]
+user_request_times: dict[int, list[float]] = {}
 
 # Статистика (сбрасывается при перезапуске)
 stats: dict = {
@@ -50,7 +55,7 @@ stats: dict = {
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-def build_prompt(media_type: str, language: str) -> str:
+def build_prompt(media_type: str, language: str, mode: str) -> str:
     if media_type == "voice":
         task = "Это голосовое сообщение из Telegram."
         summary_note = "опиши суть сказанного"
@@ -62,6 +67,16 @@ def build_prompt(media_type: str, language: str) -> str:
         lang_instruction = "Сохраняй язык оригинала."
     else:
         lang_instruction = f"Переведи ответ на язык: {language}."
+
+    if mode == "tldr":
+        return f"""{task} {lang_instruction}
+
+Напиши ОДНО короткое предложение — самую суть того, о чём говорится (и что показано, если это видео).
+
+Ответ строго в таком формате (без маркдауна, просто текст):
+
+КРАТКОЕ СОДЕРЖАНИЕ:
+(одно предложение)"""
 
     return f"""{task} {lang_instruction} Выполни две задачи:
 
@@ -100,12 +115,36 @@ async def call_gemini(contents: list) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def format_duration(seconds: int) -> str:
+    m, s = divmod(seconds, 60)
+    return f"{m}:{s:02d}"
+
+
+def check_rate_limit(user_id: int) -> bool:
+    now = time.time()
+    times = user_request_times.get(user_id, [])
+    times = [t for t in times if now - t < 60]
+    if len(times) >= RATE_LIMIT:
+        user_request_times[user_id] = times
+        return False
+    times.append(now)
+    user_request_times[user_id] = times
+    return True
+
+
 def format_response(raw: str, mode: str) -> str:
     raw = raw.strip()
     upper = raw.upper()
 
     t_idx = upper.find("ТРАНСКРИПЦИЯ:")
     s_idx = upper.find("КРАТКОЕ СОДЕРЖАНИЕ:")
+
+    if mode == "tldr":
+        if s_idx != -1:
+            summary = raw[s_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
+        else:
+            summary = raw
+        return f"💡 {html.escape(summary)}"
 
     if t_idx != -1 and s_idx != -1:
         transcription = raw[t_idx + len("ТРАНСКРИПЦИЯ:"):s_idx].strip()
@@ -167,13 +206,13 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "<b>Команды:</b>\n\n"
         "🎙 Просто отправь голосовое или кружочек — бот расшифрует\n\n"
         "<b>Режим вывода:</b>\n"
-        "/both — показывать транскрипцию и саммари <i>(по умолчанию)</i>\n"
+        "/both — транскрипция + саммари <i>(по умолчанию)</i>\n"
         "/transcription_only — только транскрипция\n"
-        "/summary_only — только краткое содержание\n\n"
+        "/summary_only — только краткое содержание\n"
+        "/tldr — одно предложение, самая суть\n\n"
         "<b>Язык ответа:</b>\n"
         "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
-        "/language ru — перевести на русский\n"
-        "/language en — перевести на английский\n\n"
+        "/language ru | en | de | ... — перевести\n\n"
         "<b>Прочее:</b>\n"
         "/status — состояние бота\n"
         "/myid — узнать свой Telegram ID\n",
@@ -189,10 +228,7 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today = str(date.today())
-    if stats["today_date"] != today:
-        today_count = 0
-    else:
-        today_count = stats["today"]
+    today_count = stats["today"] if stats["today_date"] == today else 0
 
     backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
     await update.message.reply_text(
@@ -251,6 +287,11 @@ async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("✅ Режим: только <b>краткое содержание</b>", parse_mode=ParseMode.HTML)
 
 
+async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_modes[update.effective_user.id] = "tldr"
+    await update.message.reply_text("✅ Режим: <b>только главное</b> (одно предложение)", parse_mode=ParseMode.HTML)
+
+
 async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_modes[update.effective_user.id] = "both"
     await update.message.reply_text("✅ Режим: <b>транскрипция + саммари</b>", parse_mode=ParseMode.HTML)
@@ -259,18 +300,15 @@ async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
 
-    # Только в группах
     if message.chat.type not in ("group", "supergroup"):
         await message.reply_text("⚠️ Эта команда работает только в группах.")
         return
 
-    # Проверяем что вызывающий — админ группы
     member = await message.chat.get_member(message.from_user.id)
     if member.status not in ("administrator", "creator"):
         await message.reply_text("⛔ Эта команда только для администраторов группы.")
         return
 
-    # Должно быть реплаем на чьё-то сообщение
     if not message.reply_to_message:
         await message.reply_text("ℹ️ Ответь на сообщение пользователя командой /ignore, чтобы его заблокировать.")
         return
@@ -288,11 +326,18 @@ async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     user_id = message.from_user.id
+    user_name = message.from_user.full_name
 
     if user_id in ignored_users:
         return
 
-    processing = await message.reply_text("🎙 Слушаю голосовое...")
+    if not check_rate_limit(user_id):
+        await message.reply_text("⏳ Слишком много запросов. Подожди минуту.")
+        return
+
+    duration = message.voice.duration
+    duration_str = format_duration(duration)
+    processing = await message.reply_text(f"🎙 Слушаю голосовое ({duration_str})...")
 
     try:
         file = await context.bot.get_file(message.voice.file_id)
@@ -300,7 +345,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         mode = user_modes.get(user_id, "both")
         language = user_languages.get(user_id, "auto")
-        prompt = build_prompt("voice", language)
+        prompt = build_prompt("voice", language, mode)
 
         raw = await call_gemini([
             types.Content(parts=[
@@ -310,7 +355,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ])
 
         update_stats(user_id, "voice")
-        await processing.edit_text(format_response(raw, mode), parse_mode=ParseMode.HTML)
+        header = f"🎙 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
+        await processing.edit_text(header + format_response(raw, mode), parse_mode=ParseMode.HTML)
+
+        logger.info("TRANSCRIPTION [voice %s] user=%s (%d): %s", duration_str, user_name, user_id, raw.replace("\n", " ")[:500])
 
     except Exception as e:
         logger.error("Voice error: %s", e)
@@ -320,11 +368,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     user_id = message.from_user.id
+    user_name = message.from_user.full_name
 
     if user_id in ignored_users:
         return
 
-    processing = await message.reply_text("🔵 Смотрю кружочек...")
+    if not check_rate_limit(user_id):
+        await message.reply_text("⏳ Слишком много запросов. Подожди минуту.")
+        return
+
+    duration = message.video_note.duration
+    duration_str = format_duration(duration)
+    processing = await message.reply_text(f"🔵 Смотрю кружочек ({duration_str})...")
 
     try:
         file = await context.bot.get_file(message.video_note.file_id)
@@ -332,7 +387,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         mode = user_modes.get(user_id, "both")
         language = user_languages.get(user_id, "auto")
-        prompt = build_prompt("video", language)
+        prompt = build_prompt("video", language, mode)
 
         raw = await call_gemini([
             types.Content(parts=[
@@ -342,7 +397,10 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ])
 
         update_stats(user_id, "video")
-        await processing.edit_text(format_response(raw, mode), parse_mode=ParseMode.HTML)
+        header = f"🔵 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
+        await processing.edit_text(header + format_response(raw, mode), parse_mode=ParseMode.HTML)
+
+        logger.info("TRANSCRIPTION [video %s] user=%s (%d): %s", duration_str, user_name, user_id, raw.replace("\n", " ")[:500])
 
     except Exception as e:
         logger.error("Video note error: %s", e)
@@ -361,6 +419,7 @@ def main() -> None:
     app.add_handler(CommandHandler("language", handle_language))
     app.add_handler(CommandHandler("transcription_only", handle_transcription_only))
     app.add_handler(CommandHandler("summary_only", handle_summary_only))
+    app.add_handler(CommandHandler("tldr", handle_tldr))
     app.add_handler(CommandHandler("both", handle_both))
     app.add_handler(CommandHandler("ignore", handle_ignore))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
