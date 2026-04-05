@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(apt-get update:*)",
+      "Bash(apt-get install:*)",
+      "Bash(dnf install:*)",
+      "Bash(docker compose up:*)",
+      "Bash(docker compose logs:*)",
+      "Bash(git --version)",
+      "Bash(gh --version)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
