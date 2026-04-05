@@ -218,7 +218,6 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
         "/language ru | en | de | ... — перевести\n\n"
         "<b>Прочее:</b>\n"
-        "/status — состояние бота\n"
         "/myid — узнать свой Telegram ID\n",
         parse_mode=ParseMode.HTML,
     )
@@ -230,36 +229,31 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"👤 <b>{html.escape(name)}</b>\nTelegram ID: <code>{uid}</code>", parse_mode=ParseMode.HTML)
 
 
-async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today = str(date.today())
-    today_count = stats["today"] if stats["today_date"] == today else 0
-
-    backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
-    await update.message.reply_text(
-        f"✅ <b>Бот работает</b>\n\n"
-        f"🤖 Модель: <code>{GEMINI_MODEL}</code>\n"
-        f"🔑 Резервный ключ: {backup}\n"
-        f"📊 Запросов сегодня: <b>{today_count}</b>\n"
-        f"📊 Всего голосовых: <b>{stats['voice']}</b>\n"
-        f"📊 Всего кружочков: <b>{stats['video']}</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
 
+    today = str(date.today())
+    today_count = stats["today"] if stats["today_date"] == today else 0
+    backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
+
     top_users = sorted(stats["users"].items(), key=lambda x: x[1], reverse=True)[:5]
     top_text = "\n".join(f"  <code>{uid}</code>: {cnt}" for uid, cnt in top_users) or "  нет данных"
 
+    blocked_text = "\n".join(f"  <code>{uid}</code>" for uid in ignored_users) or "  нет"
+
     await update.message.reply_text(
-        f"📊 <b>Статистика</b>\n\n"
-        f"🎙 Голосовых: <b>{stats['voice']}</b>\n"
-        f"🔵 Кружочков: <b>{stats['video']}</b>\n"
-        f"📅 Сегодня: <b>{stats['today']}</b>\n\n"
-        f"👥 Топ пользователей:\n{top_text}",
+        f"🤖 <b>Статус и статистика</b>\n\n"
+        f"<b>Система:</b>\n"
+        f"  Модель: <code>{GEMINI_MODEL}</code>\n"
+        f"  Резервный ключ: {backup}\n\n"
+        f"<b>Запросы:</b>\n"
+        f"  Сегодня: <b>{today_count}</b>\n"
+        f"  Голосовых всего: <b>{stats['voice']}</b>\n"
+        f"  Кружочков всего: <b>{stats['video']}</b>\n\n"
+        f"<b>Топ пользователей:</b>\n{top_text}\n\n"
+        f"<b>Заблокированы:</b>\n{blocked_text}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -299,6 +293,62 @@ async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_modes[update.effective_user.id] = "both"
     await update.message.reply_text("✅ Режим: <b>транскрипция + саммари</b>", parse_mode=ParseMode.HTML)
+
+
+async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администратора.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /block <code>user_id</code>\n"
+            "Узнать ID пользователя: попроси его написать /myid",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID. Должно быть число.")
+        return
+
+    if target_id == ADMIN_USER_ID:
+        await update.message.reply_text("❌ Нельзя заблокировать самого себя.")
+        return
+
+    ignored_users.add(target_id)
+    logger.info("ADMIN BLOCK | admin=%d blocked user=%d", update.effective_user.id, target_id)
+    await update.message.reply_text(f"🚫 Пользователь <code>{target_id}</code> заблокирован.", parse_mode=ParseMode.HTML)
+
+
+async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администратора.")
+        return
+
+    if not context.args:
+        blocked = "\n".join(f"  <code>{uid}</code>" for uid in ignored_users) or "  никого нет"
+        await update.message.reply_text(
+            f"Использование: /unblock <code>user_id</code>\n\n"
+            f"<b>Сейчас заблокированы:</b>\n{blocked}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID. Должно быть число.")
+        return
+
+    if target_id in ignored_users:
+        ignored_users.discard(target_id)
+        logger.info("ADMIN UNBLOCK | admin=%d unblocked user=%d", update.effective_user.id, target_id)
+        await update.message.reply_text(f"✅ Пользователь <code>{target_id}</code> разблокирован.", parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(f"ℹ️ Пользователь <code>{target_id}</code> не был заблокирован.", parse_mode=ParseMode.HTML)
 
 
 async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -442,8 +492,9 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("myid", handle_myid))
-    app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("stats", handle_stats))
+    app.add_handler(CommandHandler("block", handle_block))
+    app.add_handler(CommandHandler("unblock", handle_unblock))
     app.add_handler(CommandHandler("language", handle_language))
     app.add_handler(CommandHandler("transcription_only", handle_transcription_only))
     app.add_handler(CommandHandler("summary_only", handle_summary_only))
