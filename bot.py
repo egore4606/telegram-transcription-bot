@@ -3,6 +3,7 @@ import os
 import logging
 import time
 from datetime import date
+from datetime import datetime
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -14,6 +15,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Заглушить спам от httpx (getUpdates каждые 2-3 сек)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -339,9 +343,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     duration_str = format_duration(duration)
     processing = await message.reply_text(f"🎙 Слушаю голосовое ({duration_str})...")
 
+    chat_title = message.chat.title or "личка"
+    chat_id = message.chat.id
+    t_start = time.monotonic()
+
     try:
         file = await context.bot.get_file(message.voice.file_id)
         data = await file.download_as_bytearray()
+        file_size_kb = len(data) // 1024
 
         mode = user_modes.get(user_id, "both")
         language = user_languages.get(user_id, "auto")
@@ -354,14 +363,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ])
         ])
 
+        elapsed = time.monotonic() - t_start
         update_stats(user_id, "voice")
         header = f"🎙 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
         await processing.edit_text(header + format_response(raw, mode), parse_mode=ParseMode.HTML)
 
-        logger.info("TRANSCRIPTION [voice %s] user=%s (%d): %s", duration_str, user_name, user_id, raw.replace("\n", " ")[:500])
+        logger.info(
+            "✅ VOICE | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | time=%.1fs | text: %s",
+            chat_title, chat_id, user_name, user_id, duration_str, file_size_kb, mode, language, elapsed,
+            raw.replace("\n", " ")[:300]
+        )
 
     except Exception as e:
-        logger.error("Voice error: %s", e)
+        elapsed = time.monotonic() - t_start
+        logger.error("❌ VOICE ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error: %s",
+                     chat_title, chat_id, user_name, user_id, elapsed, e)
         await processing.edit_text(friendly_error(e), parse_mode=ParseMode.HTML)
 
 
@@ -381,9 +397,14 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     duration_str = format_duration(duration)
     processing = await message.reply_text(f"🔵 Смотрю кружочек ({duration_str})...")
 
+    chat_title = message.chat.title or "личка"
+    chat_id = message.chat.id
+    t_start = time.monotonic()
+
     try:
         file = await context.bot.get_file(message.video_note.file_id)
         data = await file.download_as_bytearray()
+        file_size_kb = len(data) // 1024
 
         mode = user_modes.get(user_id, "both")
         language = user_languages.get(user_id, "auto")
@@ -396,14 +417,21 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ])
         ])
 
+        elapsed = time.monotonic() - t_start
         update_stats(user_id, "video")
         header = f"🔵 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
         await processing.edit_text(header + format_response(raw, mode), parse_mode=ParseMode.HTML)
 
-        logger.info("TRANSCRIPTION [video %s] user=%s (%d): %s", duration_str, user_name, user_id, raw.replace("\n", " ")[:500])
+        logger.info(
+            "✅ VIDEO | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | time=%.1fs | text: %s",
+            chat_title, chat_id, user_name, user_id, duration_str, file_size_kb, mode, language, elapsed,
+            raw.replace("\n", " ")[:300]
+        )
 
     except Exception as e:
-        logger.error("Video note error: %s", e)
+        elapsed = time.monotonic() - t_start
+        logger.error("❌ VIDEO ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error: %s",
+                     chat_title, chat_id, user_name, user_id, elapsed, e)
         await processing.edit_text(friendly_error(e), parse_mode=ParseMode.HTML)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
