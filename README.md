@@ -15,6 +15,8 @@ Works in group chats and private messages. Supports forwarded voice messages.
 - **Model overload recovery** — retries the same model after 5 seconds, then switches to fallback Gemini models
 - **Rate limiting** — max 5 requests per user per minute
 - **SQLite persistence** — settings, stats, ignore lists, rate limits, and processed media history survive restarts
+- **User feedback command** — users can send feedback directly to the bot admin
+- **Built-in changelog** — users can read recent bot updates with a command
 - **Admin commands** — detailed stats, ignore users in groups
 - Shows voice/video **duration** in every response
 - All transcriptions logged to Docker with chat name, user, timing, file size
@@ -36,6 +38,8 @@ Works in group chats and private messages. Supports forwarded voice messages.
 | `/status` | Bot status, model, request counts |
 | `/stats` | Detailed stats — admin only |
 | `/myid` | Show your Telegram user ID |
+| `/changelog` | Show recent bot updates |
+| `/feedback [text]` | Send feedback to the bot admin |
 | `/ignore` | Reply to a message to mute that user *(group admins only)* |
 
 ## How it looks

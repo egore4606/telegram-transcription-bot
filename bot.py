@@ -50,6 +50,17 @@ if GEMINI_API_KEY_2:
 
 STORAGE = Storage(DATABASE_PATH)
 
+PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
+
+Вот что стало лучше:
+- если Gemini временно перегружен, бот теперь обычно не падает с ошибкой, а сам ждёт, пробует снова и при необходимости переключается на резервные модели;
+- режим ответа и язык теперь можно настраивать отдельно в личке и в каждой группе;
+- настройки, статистика и история обработанных голосовых и кружочков теперь не пропадают после перезапуска бота;
+- появилась команда <code>/feedback</code> — можно быстро отправить пожелание или сообщить о проблеме;
+- появилась команда <code>/changelog</code> — можно в любой момент посмотреть последние изменения.
+
+Если заметишь что-то странное в работе бота, отправь <code>/feedback твой текст</code>."""
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 
@@ -405,9 +416,15 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
         "/language ru | en | de | ... — перевести\n\n"
         "<b>Прочее:</b>\n"
-        "/myid — узнать свой Telegram ID\n",
+        "/myid — узнать свой Telegram ID\n"
+        "/changelog — что нового в боте\n"
+        "/feedback <текст> — отправить пожелание или сообщение о проблеме\n",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def handle_changelog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(PUBLIC_CHANGELOG_TEXT, parse_mode=ParseMode.HTML)
 
 
 async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -417,6 +434,51 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"👤 <b>{html.escape(name)}</b>\nTelegram ID: <code>{uid}</code>",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /feedback <твой текст>\n\n"
+            "Например:\n"
+            "<code>/feedback Иногда слишком долго отвечает на кружочки</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if ADMIN_USER_ID == 0:
+        await update.message.reply_text("⚠️ Команда временно недоступна: администратор не настроен.")
+        return
+
+    message = update.message
+    chat = message.chat
+    user = message.from_user
+    feedback_text = " ".join(context.args).strip()
+
+    chat_label = "личка" if chat.type == "private" else f"{chat.type}: {chat.title or chat.id}"
+    admin_message = (
+        "📨 <b>Новый feedback по боту</b>\n\n"
+        f"<b>От:</b> {html.escape(user.full_name)}\n"
+        f"<b>User ID:</b> <code>{user.id}</code>\n"
+        f"<b>Username:</b> <code>{html.escape(user.username or '-')}</code>\n"
+        f"<b>Чат:</b> {html.escape(str(chat_label))}\n"
+        f"<b>Chat ID:</b> <code>{chat.id}</code>\n\n"
+        f"<b>Текст:</b>\n<blockquote expandable>{html.escape(feedback_text)}</blockquote>"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=admin_message,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as error:
+        logger.error("FEEDBACK FORWARD ERROR | user=%d | chat=%d | error=%s", user.id, chat.id, error)
+        await update.message.reply_text("⚠️ Не удалось отправить feedback администратору. Попробуй ещё раз позже.")
+        return
+
+    logger.info("FEEDBACK | from_user=%d | chat=%d | text=%s", user.id, chat.id, feedback_text[:300])
+    await update.message.reply_text("✅ Спасибо. Я отправил твой feedback администратору.")
 
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -815,6 +877,8 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CommandHandler("changelog", handle_changelog))
+    app.add_handler(CommandHandler("feedback", handle_feedback))
     app.add_handler(CommandHandler("myid", handle_myid))
     app.add_handler(CommandHandler("stats", handle_stats))
     app.add_handler(CommandHandler("block", handle_block))
