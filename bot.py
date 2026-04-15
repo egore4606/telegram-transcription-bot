@@ -418,7 +418,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "<b>Прочее:</b>\n"
         "/myid — узнать свой Telegram ID\n"
         "/changelog — что нового в боте\n"
-        "/feedback <code>&lt;текст&gt;</code> — отправить пожелание или сообщение о проблеме\n",
+        "/feedback — бот попросит следующим сообщением написать feedback\n"
+        "/feedback <code>&lt;текст&gt;</code> — отправить feedback сразу одной командой\n",
         parse_mode=ParseMode.HTML,
     )
 
@@ -437,15 +438,6 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await update.message.reply_text(
-            "Использование: <code>/feedback &lt;твой текст&gt;</code>\n\n"
-            "Например:\n"
-            "<code>/feedback Иногда слишком долго отвечает на кружочки</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
     if ADMIN_USER_ID == 0:
         await update.message.reply_text("⚠️ Команда временно недоступна: администратор не настроен.")
         return
@@ -453,7 +445,28 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     message = update.message
     chat = message.chat
     user = message.from_user
+    if not context.args:
+        STORAGE.set_pending_feedback(chat.id, user.id)
+        await update.message.reply_text(
+            "✍️ Напиши следующим сообщением свой feedback, и я отправлю его администратору.\n\n"
+            "Если хочешь, можешь и сразу одной командой:\n"
+            "<code>/feedback Иногда слишком долго отвечает на кружочки</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     feedback_text = " ".join(context.args).strip()
+    await forward_feedback(update, context, feedback_text)
+
+
+async def forward_feedback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    feedback_text: str,
+) -> None:
+    message = update.message
+    chat = message.chat
+    user = message.from_user
 
     chat_label = "личка" if chat.type == "private" else f"{chat.type}: {chat.title or chat.id}"
     admin_message = (
@@ -477,8 +490,27 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("⚠️ Не удалось отправить feedback администратору. Попробуй ещё раз позже.")
         return
 
+    STORAGE.clear_pending_feedback(chat.id, user.id)
     logger.info("FEEDBACK | from_user=%d | chat=%d | text=%s", user.id, chat.id, feedback_text[:300])
     await update.message.reply_text("✅ Спасибо. Я отправил твой feedback администратору.")
+
+
+async def handle_pending_feedback_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None or message.text is None:
+        return
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    if not STORAGE.has_pending_feedback(chat_id, user_id):
+        return
+
+    feedback_text = message.text.strip()
+    if not feedback_text:
+        await message.reply_text("⚠️ Feedback получился пустым. Напиши текстом, что именно хочешь передать.")
+        return
+
+    await forward_feedback(update, context, feedback_text)
 
 
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -904,6 +936,7 @@ def main() -> None:
     app.add_handler(CommandHandler("ignore", handle_ignore))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pending_feedback_message))
     app.add_error_handler(handle_error)
 
     logger.info(

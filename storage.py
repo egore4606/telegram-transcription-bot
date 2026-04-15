@@ -154,6 +154,13 @@ class Storage:
                         ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS pending_feedback (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, user_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_ignored_users_lookup
                     ON ignored_users(user_id, source, chat_id);
                 CREATE INDEX IF NOT EXISTS idx_rate_limits_user_ts
@@ -164,6 +171,8 @@ class Storage:
                     ON message_processing(user_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_model_attempts_processing
                     ON model_attempts(message_processing_id, attempt_no);
+                CREATE INDEX IF NOT EXISTS idx_pending_feedback_created
+                    ON pending_feedback(created_at);
                 """
             )
 
@@ -535,4 +544,37 @@ class Storage:
                     started_at,
                     completed_at,
                 ),
+            )
+
+    def set_pending_feedback(self, chat_id: int, user_id: int) -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_feedback (chat_id, user_id, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                    created_at = excluded.created_at
+                """,
+                (chat_id, user_id, now),
+            )
+
+    def has_pending_feedback(self, chat_id: int, user_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM pending_feedback
+                WHERE chat_id = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (chat_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def clear_pending_feedback(self, chat_id: int, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_feedback WHERE chat_id = ? AND user_id = ?",
+                (chat_id, user_id),
             )

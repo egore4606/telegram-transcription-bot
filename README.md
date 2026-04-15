@@ -39,7 +39,8 @@ Works in group chats and private messages. Supports forwarded voice messages.
 | `/stats` | Detailed stats — admin only |
 | `/myid` | Show your Telegram user ID |
 | `/changelog` | Show recent bot updates |
-| `/feedback [text]` | Send feedback to the bot admin |
+| `/feedback` | Bot asks for your feedback in the next message |
+| `/feedback [text]` | Send feedback to the bot admin immediately |
 | `/ignore` | Reply to a message to mute that user *(group admins only)* |
 
 ## How it looks
