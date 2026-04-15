@@ -418,7 +418,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "<b>Прочее:</b>\n"
         "/myid — узнать свой Telegram ID\n"
         "/changelog — что нового в боте\n"
-        "/feedback <текст> — отправить пожелание или сообщение о проблеме\n",
+        "/feedback <code>&lt;текст&gt;</code> — отправить пожелание или сообщение о проблеме\n",
         parse_mode=ParseMode.HTML,
     )
 
@@ -439,7 +439,7 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text(
-            "Использование: /feedback <твой текст>\n\n"
+            "Использование: <code>/feedback &lt;твой текст&gt;</code>\n\n"
             "Например:\n"
             "<code>/feedback Иногда слишком долго отвечает на кружочки</code>",
             parse_mode=ParseMode.HTML,
@@ -479,6 +479,19 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     logger.info("FEEDBACK | from_user=%d | chat=%d | text=%s", user.id, chat.id, feedback_text[:300])
     await update.message.reply_text("✅ Спасибо. Я отправил твой feedback администратору.")
+
+
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("UNHANDLED ERROR | update=%s", update, exc_info=context.error)
+
+    message = getattr(update, "effective_message", None)
+    if message is None:
+        return
+
+    try:
+        await message.reply_text("⚠️ Внутренняя ошибка. Попробуй ещё раз через пару секунд.")
+    except Exception as error:
+        logger.error("ERROR HANDLER FAILED | error=%s", error)
 
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -891,6 +904,7 @@ def main() -> None:
     app.add_handler(CommandHandler("ignore", handle_ignore))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
+    app.add_error_handler(handle_error)
 
     logger.info(
         "Bot started (models: %s, backup key: %s, db: %s)",
