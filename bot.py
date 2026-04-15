@@ -148,6 +148,14 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}:{remaining_seconds:02d}"
 
 
+def format_processing_time(seconds: float) -> str:
+    total_seconds = max(1, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    if minutes == 0:
+        return f"{remaining_seconds} сек"
+    return f"{minutes} мин {remaining_seconds:02d} сек"
+
+
 def get_settings_scope(message) -> tuple[tuple[str, int], str]:
     if message.chat.type in ("group", "supergroup"):
         return ("chat", message.chat.id), "для этой группы"
@@ -189,8 +197,18 @@ def format_response(raw: str, mode: str) -> str:
     return "\n\n".join(parts) if parts else html.escape(transcription)
 
 
-def build_final_reply(media_emoji: str, duration_str: str, user_name: str, raw: str, mode: str) -> str:
-    header = f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
+def build_final_reply(
+    media_emoji: str,
+    duration_str: str,
+    user_name: str,
+    raw: str,
+    mode: str,
+    processing_time_text: str,
+) -> str:
+    header = (
+        f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)} "
+        f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>\n\n"
+    )
     return header + format_response(raw, mode)
 
 
@@ -254,10 +272,53 @@ async def safe_edit_text(message, text: str) -> None:
             raise
 
 
-async def show_overload_countdown(message, model_name: str) -> None:
+class ProcessingProgress:
+    def __init__(self, message, initial_status_text: str) -> None:
+        self.message = message
+        self.initial_status_text = initial_status_text
+        self.status_text = initial_status_text
+        self.started_monotonic = time.monotonic()
+        self._last_rendered_text = ""
+        self._stop_event = asyncio.Event()
+
+    def elapsed_seconds(self) -> float:
+        return time.monotonic() - self.started_monotonic
+
+    def elapsed_text(self) -> str:
+        return format_processing_time(self.elapsed_seconds())
+
+    def render(self) -> str:
+        return (
+            f"{self.status_text}\n\n"
+            f"⏱ <b>Обрабатывается:</b> {html.escape(self.elapsed_text())}"
+        )
+
+    async def refresh(self) -> None:
+        rendered = self.render()
+        if rendered == self._last_rendered_text:
+            return
+        await safe_edit_text(self.message, rendered)
+        self._last_rendered_text = rendered
+
+    async def set_status_text(self, status_text: str) -> None:
+        self.status_text = status_text
+        await self.refresh()
+
+    async def run(self) -> None:
+        while not self._stop_event.is_set():
+            await self.refresh()
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=1)
+            except asyncio.TimeoutError:
+                continue
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+
+async def show_overload_countdown(progress: ProcessingProgress, model_name: str) -> None:
     for seconds_left in range(MODEL_OVERLOAD_RETRY_DELAY, 0, -1):
-        await safe_edit_text(
-            message,
+        await progress.set_status_text(
             "⚠️ <b>Модель перегружена</b>\n"
             f"<code>{html.escape(model_name)}</code>\n"
             f"Пробую снова через <b>{seconds_left}</b> сек...",
@@ -329,7 +390,7 @@ async def call_gemini(
 
 async def call_gemini_with_retries(
     contents: list,
-    processing_message,
+    progress: ProcessingProgress,
     message_processing_id: int,
     run_meta: dict[str, object],
 ) -> tuple[str, str]:
@@ -345,8 +406,7 @@ async def call_gemini_with_retries(
 
             try:
                 if model_index > 0 and attempt == 0:
-                    await safe_edit_text(
-                        processing_message,
+                    await progress.set_status_text(
                         "🔄 <b>Переключаюсь на резервную модель</b>\n"
                         f"<code>{html.escape(model_name)}</code>\n"
                         "Пробую обработать сообщение снова...",
@@ -369,14 +429,13 @@ async def call_gemini_with_retries(
                 )
 
                 if model_index == 0 and attempt == 0:
-                    await show_overload_countdown(processing_message, model_name)
+                    await show_overload_countdown(progress, model_name)
                     continue
 
                 next_model_index = model_index + 1
                 if next_model_index < len(GEMINI_MODEL_CHAIN):
                     next_model = GEMINI_MODEL_CHAIN[next_model_index]
-                    await safe_edit_text(
-                        processing_message,
+                    await progress.set_status_text(
                         "⚠️ <b>Модель всё ещё перегружена</b>\n"
                         f"<code>{html.escape(model_name)}</code>\n"
                         f"Переключаюсь на <code>{html.escape(next_model)}</code>...",
@@ -793,7 +852,9 @@ async def handle_media(
         await message.reply_text(rate_limit_text)
         return
 
-    processing = await message.reply_text(str(media_meta["progress_text"]))
+    processing = await message.reply_text("⏱ Запускаю обработку...")
+    progress = ProcessingProgress(processing, str(media_meta["progress_text"]))
+    progress_task = asyncio.create_task(progress.run())
     t_start = time.monotonic()
     started_at = utc_now()
     message_processing_id = STORAGE.create_message_processing(
@@ -833,15 +894,25 @@ async def handle_media(
                     ]
                 )
             ],
-            processing,
+            progress,
             message_processing_id,
             run_meta,
         )
 
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
+        processing_time_text = format_processing_time(elapsed_seconds)
         transcription, summary = parse_response_sections(raw, mode)
-        final_reply = build_final_reply(str(media_meta["emoji"]), duration_str, user_name, raw, mode)
+        final_reply = build_final_reply(
+            str(media_meta["emoji"]),
+            duration_str,
+            user_name,
+            raw,
+            mode,
+            processing_time_text,
+        )
+        progress.stop()
+        await progress_task
         await safe_edit_text(processing, final_reply)
 
         STORAGE.increment_stats(user_id, media_type)
@@ -879,6 +950,8 @@ async def handle_media(
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
         user_error_text = friendly_error(error)
+        progress.stop()
+        await progress_task
 
         STORAGE.update_message_processing(
             message_processing_id,
