@@ -9,13 +9,15 @@ Works in group chats and private messages. Supports forwarded voice messages.
 - Transcribes **voice messages** (OGG audio)
 - Transcribes **video notes** (circles) — including visual description from video
 - **Four output modes** per user: full, transcription only, summary only, or one-sentence TL;DR
+- **Separate settings scopes** — private chats keep personal settings, each group keeps its own mode/language
 - **Per-user language** setting — translate output to any language
 - **Fallback API key** — switches to a backup Gemini key automatically on quota limit
+- **Model overload recovery** — retries the same model after 5 seconds, then switches to fallback Gemini models
 - **Rate limiting** — max 5 requests per user per minute
 - **Admin commands** — detailed stats, ignore users in groups
 - Shows voice/video **duration** in every response
 - All transcriptions logged to Docker with chat name, user, timing, file size
-- Daily log backup via cron to `/root/Telegram/logs/`
+- Daily log backup via cron to `./logs/`
 - Runs in **Docker** — isolated, auto-restarts on reboot
 
 ## Commands
@@ -68,7 +70,7 @@ docker compose up -d --build
 TELEGRAM_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_primary_gemini_key
 GEMINI_API_KEY_2=your_backup_gemini_key    # optional, used on quota limit
-GEMINI_MODEL=gemini-3.1-flash-lite-preview # optional
+GEMINI_MODEL=gemini-3.1-flash-lite-preview # optional, primary model
 ADMIN_USER_ID=123456789                    # your Telegram ID (find with /myid)
 RATE_LIMIT=5                               # max requests per user per minute
 ```
