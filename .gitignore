@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 logs/
+*.sqlite3
+*.db
+data/

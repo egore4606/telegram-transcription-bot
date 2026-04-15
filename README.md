@@ -14,9 +14,11 @@ Works in group chats and private messages. Supports forwarded voice messages.
 - **Fallback API key** — switches to a backup Gemini key automatically on quota limit
 - **Model overload recovery** — retries the same model after 5 seconds, then switches to fallback Gemini models
 - **Rate limiting** — max 5 requests per user per minute
+- **SQLite persistence** — settings, stats, ignore lists, rate limits, and processed media history survive restarts
 - **Admin commands** — detailed stats, ignore users in groups
 - Shows voice/video **duration** in every response
 - All transcriptions logged to Docker with chat name, user, timing, file size
+- Processed voice/video requests are archived in SQLite with status, model attempts, transcription, summary, and final reply
 - Daily log backup via cron to `./logs/`
 - Runs in **Docker** — isolated, auto-restarts on reboot
 
@@ -71,6 +73,7 @@ TELEGRAM_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_primary_gemini_key
 GEMINI_API_KEY_2=your_backup_gemini_key    # optional, used on quota limit
 GEMINI_MODEL=gemini-3.1-flash-lite-preview # optional, primary model
+DATABASE_PATH=/data/bot.sqlite3            # optional, SQLite DB inside Docker volume
 ADMIN_USER_ID=123456789                    # your Telegram ID (find with /myid)
 RATE_LIMIT=5                               # max requests per user per minute
 ```
@@ -96,6 +99,21 @@ Transcriptions are logged to Docker with full context:
 ```
 
 Daily log backups are saved to `./logs/bot-YYYY-MM-DD.log` via cron at midnight.
+
+## Database
+
+The bot stores its persistent state in SQLite. By default Docker mounts a named volume and keeps the database at `/data/bot.sqlite3` inside the container.
+
+Stored in the database:
+
+- Private chat settings and per-group settings
+- Ignore/block state
+- Rate-limit windows
+- Daily and per-user stats
+- Processed voice/video request history
+- Model attempt history for each processed message
+
+Only media the bot actually processes is archived. Regular text chat messages are not copied into the database.
 
 ## Tech stack
 

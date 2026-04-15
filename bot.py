@@ -1,15 +1,17 @@
 import asyncio
 import html
-import os
 import logging
+import os
 import time
-from datetime import date
 
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google import genai
 from google.genai import types
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+from storage import Storage, utc_now
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -31,6 +33,7 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ]
+DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/bot.sqlite3")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
@@ -45,30 +48,10 @@ gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
 if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
 
-# ── In-memory state ───────────────────────────────────────────────────────────
-
-# ("user" | "chat", id) → "both" | "transcription_only" | "summary_only" | "tldr"
-mode_settings: dict[tuple[str, int], str] = {}
-
-# ("user" | "chat", id) → "auto" | "ru" | "en" | "de" | ...
-language_settings: dict[tuple[str, int], str] = {}
-
-# user_ids которых бот игнорирует
-ignored_users: set[int] = set()
-
-# Rate limiting: user_id → [timestamp, ...]
-user_request_times: dict[int, list[float]] = {}
-
-# Статистика (сбрасывается при перезапуске)
-stats: dict = {
-    "voice": 0,
-    "video": 0,
-    "today": 0,
-    "today_date": str(date.today()),
-    "users": {},  # str(user_id) → count
-}
+STORAGE = Storage(DATABASE_PATH)
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
+
 
 def build_prompt(media_type: str, language: str, mode: str) -> str:
     if media_type == "voice":
@@ -106,34 +89,24 @@ def build_prompt(media_type: str, language: str, mode: str) -> str:
 КРАТКОЕ СОДЕРЖАНИЕ:
 (текст)"""
 
-# ── Gemini call with fallback ─────────────────────────────────────────────────
-
-async def call_gemini(contents: list, model_name: str) -> str:
-    last_error = None
-    for i, client in enumerate(gemini_clients):
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-            )
-            return response.text
-        except Exception as e:
-            err_str = str(e).lower()
-            is_quota = "429" in str(e) or "quota" in err_str or "rate" in err_str or "resource_exhausted" in err_str
-            if is_quota and i < len(gemini_clients) - 1:
-                logger.warning("Client %d quota exceeded, switching to backup key", i + 1)
-                last_error = e
-                continue
-            last_error = e
-            break
-    raise last_error
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def is_model_overloaded_error(e: Exception) -> bool:
-    err_str = str(e).lower()
+
+def is_quota_error(error: Exception) -> bool:
+    err_str = str(error).lower()
     return (
-        "503" in str(e)
+        "429" in str(error)
+        or "quota" in err_str
+        or "rate" in err_str
+        or "resource_exhausted" in err_str
+    )
+
+
+def is_model_overloaded_error(error: Exception) -> bool:
+    err_str = str(error).lower()
+    return (
+        "503" in str(error)
         or "status': 'unavailable'" in err_str
         or '"status": "unavailable"' in err_str
         or "high demand" in err_str
@@ -142,11 +115,131 @@ def is_model_overloaded_error(e: Exception) -> bool:
     )
 
 
+def extract_error_code(error: Exception) -> str:
+    err_str = str(error).lower()
+    if is_model_overloaded_error(error):
+        return "model_overloaded"
+    if is_quota_error(error):
+        return "quota_exhausted"
+    if "too large" in err_str or "file_too_large" in err_str or "size" in err_str:
+        return "file_too_large"
+    if "invalid" in err_str or "unsupported" in err_str:
+        return "invalid_media"
+    return "unknown_error"
+
+
+def shorten_error(error: Exception, limit: int = 1000) -> str:
+    return str(error).strip()[:limit]
+
+
+def format_duration(seconds: int) -> str:
+    minutes, remaining_seconds = divmod(seconds, 60)
+    return f"{minutes}:{remaining_seconds:02d}"
+
+
+def get_settings_scope(message) -> tuple[tuple[str, int], str]:
+    if message.chat.type in ("group", "supergroup"):
+        return ("chat", message.chat.id), "для этой группы"
+    return ("user", message.from_user.id), "для тебя"
+
+
+def parse_response_sections(raw: str, mode: str) -> tuple[str, str]:
+    raw = raw.strip()
+    upper = raw.upper()
+
+    transcription_idx = upper.find("ТРАНСКРИПЦИЯ:")
+    summary_idx = upper.find("КРАТКОЕ СОДЕРЖАНИЕ:")
+
+    if mode == "tldr":
+        if summary_idx != -1:
+            return "", raw[summary_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
+        return "", raw
+
+    if transcription_idx != -1 and summary_idx != -1:
+        transcription = raw[transcription_idx + len("ТРАНСКРИПЦИЯ:"):summary_idx].strip()
+        summary = raw[summary_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
+        return transcription, summary
+
+    return raw, ""
+
+
+def format_response(raw: str, mode: str) -> str:
+    transcription, summary = parse_response_sections(raw, mode)
+
+    if mode == "tldr":
+        return f"💡 {html.escape(summary)}"
+
+    parts = []
+    if mode in ("both", "transcription_only") and transcription:
+        parts.append(f"📝 <b>Транскрипция:</b>\n<blockquote expandable>{html.escape(transcription)}</blockquote>")
+    if mode in ("both", "summary_only") and summary:
+        parts.append(f"📌 <b>Краткое содержание:</b>\n<blockquote expandable>{html.escape(summary)}</blockquote>")
+
+    return "\n\n".join(parts) if parts else html.escape(transcription)
+
+
+def build_final_reply(media_emoji: str, duration_str: str, user_name: str, raw: str, mode: str) -> str:
+    header = f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
+    return header + format_response(raw, mode)
+
+
+def friendly_error(error: Exception) -> str:
+    err_str = str(error).lower()
+    if is_model_overloaded_error(error):
+        tried_models = " → ".join(GEMINI_MODEL_CHAIN)
+        return (
+            "⏳ Все доступные модели Gemini сейчас перегружены.\n"
+            f"Пробовал по очереди: <code>{html.escape(tried_models)}</code>\n"
+            "Попробуй ещё раз чуть позже."
+        )
+    if is_quota_error(error):
+        return "⏳ Превышен лимит запросов к Gemini. Оба ключа исчерпаны. Попробуй через минуту."
+    if "too large" in err_str or "file_too_large" in err_str or "size" in err_str:
+        return "❌ Файл слишком большой (макс. 20 МБ)."
+    if "invalid" in err_str or "unsupported" in err_str:
+        return "❌ Формат файла не поддерживается."
+    return f"⚠️ Что-то пошло не так. Попробуй ещё раз.\n<code>{html.escape(str(error)[:200])}</code>"
+
+
+def is_admin(user_id: int) -> bool:
+    return ADMIN_USER_ID != 0 and user_id == ADMIN_USER_ID
+
+
+def get_chat_title(message) -> str:
+    return message.chat.title or getattr(message.chat, "full_name", None) or "личка"
+
+
+def get_media_metadata(message, media_type: str) -> dict[str, object]:
+    if media_type == "voice":
+        media = message.voice
+        return {
+            "media": media,
+            "emoji": "🎙",
+            "mime_type": "audio/ogg",
+            "progress_text": f"🎙 Слушаю голосовое ({format_duration(media.duration)})...",
+        }
+
+    media = message.video_note
+    return {
+        "media": media,
+        "emoji": "🔵",
+        "mime_type": "video/mp4",
+        "progress_text": f"🔵 Смотрю кружочек ({format_duration(media.duration)})...",
+    }
+
+
+def models_tried_text(run_meta: dict[str, object]) -> str:
+    models = run_meta.get("models_tried", [])
+    if not isinstance(models, list) or not models:
+        return ""
+    return " -> ".join(models)
+
+
 async def safe_edit_text(message, text: str) -> None:
     try:
         await message.edit_text(text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        if "message is not modified" not in str(e).lower():
+    except Exception as error:
+        if "message is not modified" not in str(error).lower():
             raise
 
 
@@ -161,15 +254,86 @@ async def show_overload_countdown(message, model_name: str) -> None:
         await asyncio.sleep(1)
 
 
-async def call_gemini_with_retries(contents: list, processing_message) -> tuple[str, str]:
+# ── Gemini call with fallback ─────────────────────────────────────────────────
+
+
+async def call_gemini(
+    contents: list,
+    model_name: str,
+    message_processing_id: int,
+    run_meta: dict[str, object],
+) -> str:
     last_error = None
 
-    for model_idx, model_name in enumerate(GEMINI_MODEL_CHAIN):
-        attempts_for_model = 2 if model_idx == 0 else 1
+    for client_index, client in enumerate(gemini_clients):
+        api_key_slot = "primary" if client_index == 0 else "backup"
+        attempt_no = int(run_meta["attempt_no"])
+        started_at = utc_now()
+
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+            )
+            completed_at = utc_now()
+            STORAGE.add_model_attempt(
+                message_processing_id=message_processing_id,
+                attempt_no=attempt_no,
+                model_name=model_name,
+                api_key_slot=api_key_slot,
+                status="success",
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            run_meta["attempt_no"] = attempt_no + 1
+            if client_index > 0:
+                run_meta["fallback_key_used"] = True
+            return response.text
+        except Exception as error:
+            completed_at = utc_now()
+            STORAGE.add_model_attempt(
+                message_processing_id=message_processing_id,
+                attempt_no=attempt_no,
+                model_name=model_name,
+                api_key_slot=api_key_slot,
+                status="error",
+                started_at=started_at,
+                completed_at=completed_at,
+                error_text=shorten_error(error),
+            )
+            run_meta["attempt_no"] = attempt_no + 1
+            if client_index > 0:
+                run_meta["fallback_key_used"] = True
+
+            if is_quota_error(error) and client_index < len(gemini_clients) - 1:
+                logger.warning("Client %d quota exceeded, switching to backup key", client_index + 1)
+                last_error = error
+                continue
+
+            last_error = error
+            break
+
+    raise last_error
+
+
+async def call_gemini_with_retries(
+    contents: list,
+    processing_message,
+    message_processing_id: int,
+    run_meta: dict[str, object],
+) -> tuple[str, str]:
+    last_error = None
+
+    for model_index, model_name in enumerate(GEMINI_MODEL_CHAIN):
+        attempts_for_model = 2 if model_index == 0 else 1
 
         for attempt in range(attempts_for_model):
+            models = run_meta.setdefault("models_tried", [])
+            if isinstance(models, list):
+                models.append(model_name)
+
             try:
-                if model_idx > 0 and attempt == 0:
+                if model_index > 0 and attempt == 0:
                     await safe_edit_text(
                         processing_message,
                         "🔄 <b>Переключаюсь на резервную модель</b>\n"
@@ -177,12 +341,12 @@ async def call_gemini_with_retries(contents: list, processing_message) -> tuple[
                         "Пробую обработать сообщение снова...",
                     )
 
-                raw = await call_gemini(contents, model_name)
+                raw = await call_gemini(contents, model_name, message_processing_id, run_meta)
                 return raw, model_name
-            except Exception as e:
-                last_error = e
+            except Exception as error:
+                last_error = error
 
-                if not is_model_overloaded_error(e):
+                if not is_model_overloaded_error(error):
                     raise
 
                 logger.warning(
@@ -190,16 +354,16 @@ async def call_gemini_with_retries(contents: list, processing_message) -> tuple[
                     model_name,
                     attempt + 1,
                     attempts_for_model,
-                    e,
+                    error,
                 )
 
-                if model_idx == 0 and attempt == 0:
+                if model_index == 0 and attempt == 0:
                     await show_overload_countdown(processing_message, model_name)
                     continue
 
-                next_model_idx = model_idx + 1
-                if next_model_idx < len(GEMINI_MODEL_CHAIN):
-                    next_model = GEMINI_MODEL_CHAIN[next_model_idx]
+                next_model_index = model_index + 1
+                if next_model_index < len(GEMINI_MODEL_CHAIN):
+                    next_model = GEMINI_MODEL_CHAIN[next_model_index]
                     await safe_edit_text(
                         processing_message,
                         "⚠️ <b>Модель всё ещё перегружена</b>\n"
@@ -213,93 +377,8 @@ async def call_gemini_with_retries(contents: list, processing_message) -> tuple[
     raise last_error
 
 
-def format_duration(seconds: int) -> str:
-    m, s = divmod(seconds, 60)
-    return f"{m}:{s:02d}"
-
-
-def get_settings_scope(message) -> tuple[tuple[str, int], str]:
-    if message.chat.type in ("group", "supergroup"):
-        return ("chat", message.chat.id), "для этой группы"
-    return ("user", message.from_user.id), "для тебя"
-
-
-def check_rate_limit(user_id: int) -> bool:
-    now = time.time()
-    times = user_request_times.get(user_id, [])
-    times = [t for t in times if now - t < 60]
-    if len(times) >= RATE_LIMIT:
-        user_request_times[user_id] = times
-        return False
-    times.append(now)
-    user_request_times[user_id] = times
-    return True
-
-
-def format_response(raw: str, mode: str) -> str:
-    raw = raw.strip()
-    upper = raw.upper()
-
-    t_idx = upper.find("ТРАНСКРИПЦИЯ:")
-    s_idx = upper.find("КРАТКОЕ СОДЕРЖАНИЕ:")
-
-    if mode == "tldr":
-        if s_idx != -1:
-            summary = raw[s_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
-        else:
-            summary = raw
-        return f"💡 {html.escape(summary)}"
-
-    if t_idx != -1 and s_idx != -1:
-        transcription = raw[t_idx + len("ТРАНСКРИПЦИЯ:"):s_idx].strip()
-        summary = raw[s_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
-    else:
-        transcription = raw
-        summary = ""
-
-    parts = []
-    if mode in ("both", "transcription_only"):
-        parts.append(f"📝 <b>Транскрипция:</b>\n<blockquote expandable>{html.escape(transcription)}</blockquote>")
-    if mode in ("both", "summary_only") and summary:
-        parts.append(f"📌 <b>Краткое содержание:</b>\n<blockquote expandable>{html.escape(summary)}</blockquote>")
-
-    return "\n\n".join(parts) if parts else html.escape(transcription)
-
-
-def friendly_error(e: Exception) -> str:
-    err_str = str(e).lower()
-    if is_model_overloaded_error(e):
-        tried_models = " → ".join(GEMINI_MODEL_CHAIN)
-        return (
-            "⏳ Все доступные модели Gemini сейчас перегружены.\n"
-            f"Пробовал по очереди: <code>{html.escape(tried_models)}</code>\n"
-            "Попробуй ещё раз чуть позже."
-        )
-    if "429" in str(e) or "quota" in err_str or "resource_exhausted" in err_str:
-        return "⏳ Превышен лимит запросов к Gemini. Оба ключа исчерпаны. Попробуй через минуту."
-    if "too large" in err_str or "file_too_large" in err_str or "size" in err_str:
-        return "❌ Файл слишком большой (макс. 20 МБ)."
-    if "invalid" in err_str or "unsupported" in err_str:
-        return "❌ Формат файла не поддерживается."
-    return f"⚠️ Что-то пошло не так. Попробуй ещё раз.\n<code>{html.escape(str(e)[:200])}</code>"
-
-
-def update_stats(user_id: int, media_type: str) -> None:
-    today = str(date.today())
-    if stats["today_date"] != today:
-        stats["today"] = 0
-        stats["today_date"] = today
-
-    stats[media_type] += 1
-    stats["today"] += 1
-    uid = str(user_id)
-    stats["users"][uid] = stats["users"].get(uid, 0) + 1
-
-
-def is_admin(user_id: int) -> bool:
-    return ADMIN_USER_ID != 0 and user_id == ADMIN_USER_ID
-
 # ── Command handlers ──────────────────────────────────────────────────────────
+
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -334,7 +413,10 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     name = update.effective_user.full_name
-    await update.message.reply_text(f"👤 <b>{html.escape(name)}</b>\nTelegram ID: <code>{uid}</code>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(
+        f"👤 <b>{html.escape(name)}</b>\nTelegram ID: <code>{uid}</code>",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -342,24 +424,27 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
 
-    today = str(date.today())
-    today_count = stats["today"] if stats["today_date"] == today else 0
+    snapshot = STORAGE.get_stats_snapshot()
     backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
 
-    top_users = sorted(stats["users"].items(), key=lambda x: x[1], reverse=True)[:5]
-    top_text = "\n".join(f"  <code>{uid}</code>: {cnt}" for uid, cnt in top_users) or "  нет данных"
+    top_text = "\n".join(
+        f"  <code>{uid}</code>: {count}" for uid, count in snapshot["top_users"]
+    ) or "  нет данных"
 
-    blocked_text = "\n".join(f"  <code>{uid}</code>" for uid in ignored_users) or "  нет"
+    blocked_text = "\n".join(
+        f"  <code>{uid}</code>" for uid in snapshot["blocked_users"]
+    ) or "  нет"
 
     await update.message.reply_text(
         f"🤖 <b>Статус и статистика</b>\n\n"
         f"<b>Система:</b>\n"
         f"  Модели: <code>{html.escape(' -> '.join(GEMINI_MODEL_CHAIN))}</code>\n"
-        f"  Резервный ключ: {backup}\n\n"
+        f"  Резервный ключ: {backup}\n"
+        f"  База данных: <code>{html.escape(DATABASE_PATH)}</code>\n\n"
         f"<b>Запросы:</b>\n"
-        f"  Сегодня: <b>{today_count}</b>\n"
-        f"  Голосовых всего: <b>{stats['voice']}</b>\n"
-        f"  Кружочков всего: <b>{stats['video']}</b>\n\n"
+        f"  Сегодня: <b>{snapshot['today']}</b>\n"
+        f"  Голосовых всего: <b>{snapshot['voice_total']}</b>\n"
+        f"  Кружочков всего: <b>{snapshot['video_total']}</b>\n\n"
         f"<b>Топ пользователей:</b>\n{top_text}\n\n"
         f"<b>Заблокированы:</b>\n{blocked_text}",
         parse_mode=ParseMode.HTML,
@@ -368,19 +453,20 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scope_key, scope_label = get_settings_scope(update.message)
+    scope_type, scope_id = scope_key
 
     if not context.args:
-        current = language_settings.get(scope_key, "auto")
+        _, current_language = STORAGE.get_settings(scope_type, scope_id)
         await update.message.reply_text(
-            f"Текущий язык {scope_label}: <code>{current}</code>\n\n"
+            f"Текущий язык {scope_label}: <code>{current_language}</code>\n\n"
             "Использование: /language auto | ru | en | de | ...",
             parse_mode=ParseMode.HTML,
         )
         return
 
-    lang = context.args[0].lower()
-    language_settings[scope_key] = lang
-    label = "язык оригинала" if lang == "auto" else lang
+    language = context.args[0].lower()
+    STORAGE.set_language(scope_type, scope_id, language)
+    label = "язык оригинала" if language == "auto" else language
     await update.message.reply_text(
         f"✅ Язык ответа {scope_label}: <b>{html.escape(label)}</b>",
         parse_mode=ParseMode.HTML,
@@ -389,7 +475,7 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def handle_transcription_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scope_key, scope_label = get_settings_scope(update.message)
-    mode_settings[scope_key] = "transcription_only"
+    STORAGE.set_mode(scope_key[0], scope_key[1], "transcription_only")
     await update.message.reply_text(
         f"✅ Режим {scope_label}: только <b>транскрипция</b>",
         parse_mode=ParseMode.HTML,
@@ -398,7 +484,7 @@ async def handle_transcription_only(update: Update, context: ContextTypes.DEFAUL
 
 async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scope_key, scope_label = get_settings_scope(update.message)
-    mode_settings[scope_key] = "summary_only"
+    STORAGE.set_mode(scope_key[0], scope_key[1], "summary_only")
     await update.message.reply_text(
         f"✅ Режим {scope_label}: только <b>краткое содержание</b>",
         parse_mode=ParseMode.HTML,
@@ -407,7 +493,7 @@ async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scope_key, scope_label = get_settings_scope(update.message)
-    mode_settings[scope_key] = "tldr"
+    STORAGE.set_mode(scope_key[0], scope_key[1], "tldr")
     await update.message.reply_text(
         f"✅ Режим {scope_label}: <b>только главное</b> (одно предложение)",
         parse_mode=ParseMode.HTML,
@@ -416,7 +502,7 @@ async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scope_key, scope_label = get_settings_scope(update.message)
-    mode_settings[scope_key] = "both"
+    STORAGE.set_mode(scope_key[0], scope_key[1], "both")
     await update.message.reply_text(
         f"✅ Режим {scope_label}: <b>транскрипция + саммари</b>",
         parse_mode=ParseMode.HTML,
@@ -446,9 +532,12 @@ async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("❌ Нельзя заблокировать самого себя.")
         return
 
-    ignored_users.add(target_id)
+    STORAGE.add_admin_block(target_id, update.effective_user.id)
     logger.info("ADMIN BLOCK | admin=%d blocked user=%d", update.effective_user.id, target_id)
-    await update.message.reply_text(f"🚫 Пользователь <code>{target_id}</code> заблокирован.", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(
+        f"🚫 Пользователь <code>{target_id}</code> заблокирован.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -457,7 +546,9 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if not context.args:
-        blocked = "\n".join(f"  <code>{uid}</code>" for uid in ignored_users) or "  никого нет"
+        blocked = "\n".join(
+            f"  <code>{uid}</code>" for uid in STORAGE.list_blocked_user_ids()
+        ) or "  никого нет"
         await update.message.reply_text(
             f"Использование: /unblock <code>user_id</code>\n\n"
             f"<b>Сейчас заблокированы:</b>\n{blocked}",
@@ -471,12 +562,17 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ Неверный ID. Должно быть число.")
         return
 
-    if target_id in ignored_users:
-        ignored_users.discard(target_id)
+    if STORAGE.remove_admin_block(target_id):
         logger.info("ADMIN UNBLOCK | admin=%d unblocked user=%d", update.effective_user.id, target_id)
-        await update.message.reply_text(f"✅ Пользователь <code>{target_id}</code> разблокирован.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"✅ Пользователь <code>{target_id}</code> разблокирован.",
+            parse_mode=ParseMode.HTML,
+        )
     else:
-        await update.message.reply_text(f"ℹ️ Пользователь <code>{target_id}</code> не был заблокирован.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"ℹ️ Пользователь <code>{target_id}</code> не был заблокирован.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -496,127 +592,225 @@ async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     target = message.reply_to_message.from_user
-    if target.id in ignored_users:
-        ignored_users.discard(target.id)
-        await message.reply_text(f"✅ Пользователь <b>{html.escape(target.full_name)}</b> снова будет обрабатываться.", parse_mode=ParseMode.HTML)
+    now_ignored = STORAGE.toggle_group_ignore(message.chat.id, target.id, message.from_user.id)
+    if now_ignored:
+        await message.reply_text(
+            f"🚫 Сообщения от <b>{html.escape(target.full_name)}</b> теперь игнорируются.",
+            parse_mode=ParseMode.HTML,
+        )
     else:
-        ignored_users.add(target.id)
-        await message.reply_text(f"🚫 Сообщения от <b>{html.escape(target.full_name)}</b> теперь игнорируются.", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"✅ Пользователь <b>{html.escape(target.full_name)}</b> снова будет обрабатываться.",
+            parse_mode=ParseMode.HTML,
+        )
+
 
 # ── Media handlers ────────────────────────────────────────────────────────────
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+async def handle_media(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    media_type: str,
+) -> None:
     message = update.message
-    user_id = message.from_user.id
-    user_name = message.from_user.full_name
-
-    if user_id in ignored_users:
-        return
-
-    if not check_rate_limit(user_id):
-        await message.reply_text("⏳ Слишком много запросов. Подожди минуту.")
-        return
-
-    duration = message.voice.duration
-    duration_str = format_duration(duration)
-    processing = await message.reply_text(f"🎙 Слушаю голосовое ({duration_str})...")
-
-    chat_title = message.chat.title or "личка"
+    user = message.from_user
+    user_id = user.id
+    user_name = user.full_name
     chat_id = message.chat.id
+    chat_title = get_chat_title(message)
+
+    STORAGE.upsert_user(user_id, user_name, user.username)
+    STORAGE.upsert_chat(chat_id, message.chat.type, message.chat.title, message.chat.username)
+
+    scope_key, _ = get_settings_scope(message)
+    scope_type, scope_id = scope_key
+    mode, language = STORAGE.get_settings(scope_type, scope_id)
+
+    media_meta = get_media_metadata(message, media_type)
+    media = media_meta["media"]
+    duration = int(media.duration)
+    duration_str = format_duration(duration)
+    file_size_kb = int(media.file_size // 1024) if getattr(media, "file_size", None) else None
+
+    if STORAGE.is_user_ignored(user_id, chat_id):
+        STORAGE.create_message_processing(
+            telegram_message_id=message.message_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            media_type=media_type,
+            telegram_file_id=media.file_id,
+            duration_seconds=duration,
+            file_size_kb=file_size_kb,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            mode=mode,
+            language=language,
+            status="ignored",
+            completed_at=utc_now(),
+            processing_ms=0,
+            error_code="ignored",
+            error_text="Ignored by policy",
+        )
+        logger.info(
+            "IGNORED | media=%s | chat=%s (%d) | user=%s (%d)",
+            media_type,
+            chat_title,
+            chat_id,
+            user_name,
+            user_id,
+        )
+        return
+
+    if not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
+        rate_limit_text = "⏳ Слишком много запросов. Подожди минуту."
+        STORAGE.create_message_processing(
+            telegram_message_id=message.message_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            media_type=media_type,
+            telegram_file_id=media.file_id,
+            duration_seconds=duration,
+            file_size_kb=file_size_kb,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            mode=mode,
+            language=language,
+            status="rate_limited",
+            completed_at=utc_now(),
+            processing_ms=0,
+            final_reply_text=rate_limit_text,
+            error_code="rate_limited",
+            error_text="Rate limit exceeded",
+        )
+        await message.reply_text(rate_limit_text)
+        return
+
+    processing = await message.reply_text(str(media_meta["progress_text"]))
     t_start = time.monotonic()
+    started_at = utc_now()
+    message_processing_id = STORAGE.create_message_processing(
+        telegram_message_id=message.message_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        media_type=media_type,
+        telegram_file_id=media.file_id,
+        duration_seconds=duration,
+        file_size_kb=file_size_kb,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        mode=mode,
+        language=language,
+        status="started",
+        started_at=started_at,
+    )
+    run_meta: dict[str, object] = {
+        "attempt_no": 1,
+        "models_tried": [],
+        "fallback_key_used": False,
+    }
 
     try:
-        file = await context.bot.get_file(message.voice.file_id)
+        file = await context.bot.get_file(media.file_id)
         data = await file.download_as_bytearray()
-        file_size_kb = len(data) // 1024
+        actual_file_size_kb = len(data) // 1024
+        mime_type = str(media_meta["mime_type"])
+        prompt = build_prompt(media_type, language, mode)
 
-        scope_key, _ = get_settings_scope(message)
-        mode = mode_settings.get(scope_key, "both")
-        language = language_settings.get(scope_key, "auto")
-        prompt = build_prompt("voice", language, mode)
-
-        raw, model_used = await call_gemini_with_retries([
-            types.Content(parts=[
-                types.Part.from_bytes(data=bytes(data), mime_type="audio/ogg"),
-                types.Part.from_text(text=prompt),
-            ])
-        ], processing)
-
-        elapsed = time.monotonic() - t_start
-        update_stats(user_id, "voice")
-        header = f"🎙 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
-        await safe_edit_text(processing, header + format_response(raw, mode))
-
-        logger.info(
-            "✅ VOICE | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | model=%s | time=%.1fs | text: %s",
-            chat_title, chat_id, user_name, user_id, duration_str, file_size_kb, mode, language, model_used, elapsed,
-            raw.replace("\n", " ")[:300]
+        raw, model_used = await call_gemini_with_retries(
+            [
+                types.Content(
+                    parts=[
+                        types.Part.from_bytes(data=bytes(data), mime_type=mime_type),
+                        types.Part.from_text(text=prompt),
+                    ]
+                )
+            ],
+            processing,
+            message_processing_id,
+            run_meta,
         )
 
-    except Exception as e:
-        elapsed = time.monotonic() - t_start
-        logger.error("❌ VOICE ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error: %s",
-                     chat_title, chat_id, user_name, user_id, elapsed, e)
-        await safe_edit_text(processing, friendly_error(e))
+        elapsed_seconds = time.monotonic() - t_start
+        elapsed_ms = int(elapsed_seconds * 1000)
+        transcription, summary = parse_response_sections(raw, mode)
+        final_reply = build_final_reply(str(media_meta["emoji"]), duration_str, user_name, raw, mode)
+        await safe_edit_text(processing, final_reply)
+
+        STORAGE.increment_stats(user_id, media_type)
+        STORAGE.update_message_processing(
+            message_processing_id,
+            status="success",
+            completed_at=utc_now(),
+            processing_ms=elapsed_ms,
+            file_size_kb=actual_file_size_kb,
+            raw_model_response=raw,
+            transcription_text=transcription,
+            summary_text=summary,
+            final_reply_text=final_reply,
+            model_used=model_used,
+            models_tried=models_tried_text(run_meta),
+            fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
+        )
+
+        logger.info(
+            "✅ %s | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | model=%s | time=%.1fs | text: %s",
+            media_type.upper(),
+            chat_title,
+            chat_id,
+            user_name,
+            user_id,
+            duration_str,
+            actual_file_size_kb,
+            mode,
+            language,
+            model_used,
+            elapsed_seconds,
+            raw.replace("\n", " ")[:300],
+        )
+    except Exception as error:
+        elapsed_seconds = time.monotonic() - t_start
+        elapsed_ms = int(elapsed_seconds * 1000)
+        user_error_text = friendly_error(error)
+
+        STORAGE.update_message_processing(
+            message_processing_id,
+            status="failed",
+            completed_at=utc_now(),
+            processing_ms=elapsed_ms,
+            final_reply_text=user_error_text,
+            models_tried=models_tried_text(run_meta),
+            fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
+            error_code=extract_error_code(error),
+            error_text=shorten_error(error),
+        )
+
+        logger.error(
+            "❌ %s ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error=%s",
+            media_type.upper(),
+            chat_title,
+            chat_id,
+            user_name,
+            user_id,
+            elapsed_seconds,
+            error,
+        )
+        await safe_edit_text(processing, user_error_text)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await handle_media(update, context, "voice")
 
 
 async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    user_id = message.from_user.id
-    user_name = message.from_user.full_name
+    await handle_media(update, context, "video")
 
-    if user_id in ignored_users:
-        return
-
-    if not check_rate_limit(user_id):
-        await message.reply_text("⏳ Слишком много запросов. Подожди минуту.")
-        return
-
-    duration = message.video_note.duration
-    duration_str = format_duration(duration)
-    processing = await message.reply_text(f"🔵 Смотрю кружочек ({duration_str})...")
-
-    chat_title = message.chat.title or "личка"
-    chat_id = message.chat.id
-    t_start = time.monotonic()
-
-    try:
-        file = await context.bot.get_file(message.video_note.file_id)
-        data = await file.download_as_bytearray()
-        file_size_kb = len(data) // 1024
-
-        scope_key, _ = get_settings_scope(message)
-        mode = mode_settings.get(scope_key, "both")
-        language = language_settings.get(scope_key, "auto")
-        prompt = build_prompt("video", language, mode)
-
-        raw, model_used = await call_gemini_with_retries([
-            types.Content(parts=[
-                types.Part.from_bytes(data=bytes(data), mime_type="video/mp4"),
-                types.Part.from_text(text=prompt),
-            ])
-        ], processing)
-
-        elapsed = time.monotonic() - t_start
-        update_stats(user_id, "video")
-        header = f"🔵 <b>{duration_str}</b> — {html.escape(user_name)}\n\n"
-        await safe_edit_text(processing, header + format_response(raw, mode))
-
-        logger.info(
-            "✅ VIDEO | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | model=%s | time=%.1fs | text: %s",
-            chat_title, chat_id, user_name, user_id, duration_str, file_size_kb, mode, language, model_used, elapsed,
-            raw.replace("\n", " ")[:300]
-        )
-
-    except Exception as e:
-        elapsed = time.monotonic() - t_start
-        logger.error("❌ VIDEO ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error: %s",
-                     chat_title, chat_id, user_name, user_id, elapsed, e)
-        await safe_edit_text(processing, friendly_error(e))
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
+    STORAGE.init_db()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", handle_start))
@@ -635,9 +829,10 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
 
     logger.info(
-        "Bot started (models: %s, backup key: %s)",
+        "Bot started (models: %s, backup key: %s, db: %s)",
         " -> ".join(GEMINI_MODEL_CHAIN),
         "yes" if GEMINI_API_KEY_2 else "no",
+        DATABASE_PATH,
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
