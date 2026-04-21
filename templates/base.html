@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Bot Admin Panel" }}</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --surface: #fffdf8;
+      --surface-2: #f0e6d8;
+      --text: #1d1a16;
+      --muted: #6c6256;
+      --line: #d8cbb8;
+      --accent: #b5562d;
+      --accent-2: #204c5b;
+      --success: #2e7d32;
+      --danger: #b42318;
+      --warning: #b26a00;
+      --info: #205375;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(181, 86, 45, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(32, 76, 91, 0.12), transparent 24%),
+        linear-gradient(180deg, #f8f3eb 0%, var(--bg) 100%);
+    }
+    .layout {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .topbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+      padding: 18px 20px;
+      background: rgba(255, 253, 248, 0.9);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      backdrop-filter: blur(10px);
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+    }
+    .brand p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .nav a, .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+    }
+    .nav a.active {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+    .cards {
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    }
+    .columns {
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      align-items: start;
+    }
+    .card, .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 12px 30px rgba(29, 26, 22, 0.05);
+    }
+    .card {
+      padding: 18px;
+    }
+    .card .label {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 10px;
+    }
+    .card .value {
+      font-size: 1.8rem;
+      font-weight: 700;
+    }
+    .card .sub {
+      margin-top: 8px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .panel {
+      overflow: hidden;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(240, 230, 216, 0.7), rgba(255, 253, 248, 0.95));
+    }
+    .panel-head h2, .panel-head h3 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+    .panel-body {
+      padding: 18px 20px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .badge.success { background: rgba(46, 125, 50, 0.14); color: var(--success); }
+    .badge.failed { background: rgba(180, 35, 24, 0.14); color: var(--danger); }
+    .badge.ignored { background: rgba(108, 98, 86, 0.14); color: var(--muted); }
+    .badge.warning { background: rgba(178, 106, 0, 0.14); color: var(--warning); }
+    .badge.info { background: rgba(32, 83, 117, 0.14); color: var(--info); }
+    .muted { color: var(--muted); }
+    .mono, code, pre {
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    .filters {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    input, select {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: inherit;
+      background: white;
+      min-width: 120px;
+    }
+    .button {
+      cursor: pointer;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .kv-item {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+    }
+    .kv-item .k {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .kv-item .v {
+      font-size: 0.98rem;
+      word-break: break-word;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #211d18;
+      color: #f9f4ea;
+      padding: 16px;
+      border-radius: 16px;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .empty {
+      color: var(--muted);
+      padding: 12px 0;
+    }
+    a.inline-link {
+      color: var(--accent-2);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    @media (max-width: 720px) {
+      .layout {
+        padding: 16px;
+      }
+      .topbar, .panel-head, .panel-body, .card {
+        padding: 16px;
+      }
+      th, td {
+        padding: 10px 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="topbar">
+      <div class="brand">
+        <h1>Telegram Bot Admin Panel</h1>
+        <p>Read-only SQLite view. Intended for localhost access over SSH tunnel.</p>
+      </div>
+      <nav class="nav">
+        <a href="/" class="{% if request.path == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/history" class="{% if request.path == '/history' %}active{% endif %}">History</a>
+        <a href="/errors" class="{% if request.path == '/errors' %}active{% endif %}">Errors</a>
+      </nav>
+    </div>
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

@@ -1,3 +1,6 @@
+import asyncio
+from unittest.mock import AsyncMock, Mock
+
 import bot
 
 
@@ -98,3 +101,84 @@ def test_build_prompt_differs_for_tldr_and_regular_modes() -> None:
     assert "ОДНО короткое предложение" in tldr_prompt
     assert "Выполни две задачи" not in tldr_prompt
     assert "Выполни две задачи" in regular_prompt
+
+
+def test_parse_limit_arg_default_and_clamp() -> None:
+    assert bot.parse_limit_arg([], default=10, maximum=20, command_name="history") == (10, None)
+    assert bot.parse_limit_arg(["50"], default=10, maximum=20, command_name="history") == (20, None)
+
+
+def test_parse_limit_arg_rejects_bad_values() -> None:
+    assert bot.parse_limit_arg(["0"], default=10, maximum=20, command_name="history") == (
+        None,
+        "Количество должно быть положительным числом.",
+    )
+    assert bot.parse_limit_arg(["abc"], default=10, maximum=20, command_name="history") == (
+        None,
+        "Использование: /history [количество]",
+    )
+
+
+def test_format_history_entry_escapes_and_formats_fields() -> None:
+    entry = {
+        "id": 7,
+        "created_at": "2026-04-21T19:31:13+00:00",
+        "user_id": 1,
+        "full_name": "Alice <Admin>",
+        "username": None,
+        "chat_id": -100,
+        "chat_type": "supergroup",
+        "title": "Group & Friends",
+        "chat_username": None,
+        "media_type": "voice",
+        "status": "failed",
+        "model_used": "gemini-2.5-flash",
+        "processing_ms": 4200,
+    }
+
+    rendered = bot.format_history_entry(entry)
+
+    assert "<b>#7</b>" in rendered
+    assert "Alice &lt;Admin&gt;" in rendered
+    assert "Group &amp; Friends" in rendered
+    assert "🎙 voice" in rendered
+    assert "❌ failed" in rendered
+
+
+def test_format_last_error_entry_escapes_error_text() -> None:
+    entry = {
+        "attempt_id": 11,
+        "attempt_started_at": "2026-04-21T19:31:13+00:00",
+        "model_name": "gemini-2.5-flash",
+        "attempt_no": 3,
+        "api_key_slot": "backup",
+        "processing_id": 7,
+        "user_id": 1,
+        "full_name": "Alice",
+        "username": "alice",
+        "chat_id": 1,
+        "chat_type": "private",
+        "title": None,
+        "chat_username": "alice",
+        "telegram_message_id": 500,
+        "attempt_error_text": "bad <tag> & boom",
+    }
+
+    rendered = bot.format_last_error_entry(entry)
+
+    assert "Attempt #11" in rendered
+    assert "@alice" in rendered
+    assert "msg <code>500</code>" in rendered
+    assert "bad &lt;tag&gt; &amp; boom" in rendered
+
+
+def test_sync_bot_commands_does_not_raise_on_bot_api_error(caplog) -> None:
+    app = Mock()
+    app.bot = Mock()
+    app.bot.set_my_commands = AsyncMock(side_effect=[RuntimeError("default fail"), RuntimeError("admin fail")])
+
+    asyncio.run(bot.sync_bot_commands(app))
+
+    assert app.bot.set_my_commands.await_count == 2
+    assert "BOT COMMAND SYNC ERROR | scope=default" in caplog.text
+    assert "BOT COMMAND SYNC ERROR | scope=admin" in caplog.text

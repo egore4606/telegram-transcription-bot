@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="grid cards">
+    <div class="card">
+      <div class="label">Total Processing</div>
+      <div class="value">{{ dashboard.total_processing }}</div>
+      <div class="sub">Last: {{ dashboard.last_processed_at|format_timestamp }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Successful</div>
+      <div class="value">{{ dashboard.success_processing }}</div>
+      <div class="sub">Failed: {{ dashboard.failed_processing }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Ignored / Rate limited</div>
+      <div class="value">{{ dashboard.ignored_processing }} / {{ dashboard.rate_limited_processing }}</div>
+      <div class="sub">Operational skips</div>
+    </div>
+    <div class="card">
+      <div class="label">Failed Attempts</div>
+      <div class="value">{{ dashboard.failed_attempts }}</div>
+      <div class="sub">Model-level failures</div>
+    </div>
+    <div class="card">
+      <div class="label">Voice / Video Total</div>
+      <div class="value">{{ dashboard.voice_total }} / {{ dashboard.video_total }}</div>
+      <div class="sub">Today: {{ dashboard.today }}</div>
+    </div>
+  </div>
+
+  <div class="grid columns" style="margin-top: 18px;">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Recent Processing</h2>
+        <a class="inline-link" href="/history">Open full history</a>
+      </div>
+      <div class="panel-body table-wrap">
+        {% if recent_processing %}
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Created</th>
+                <th>User</th>
+                <th>Chat</th>
+                <th>Media</th>
+                <th>Status</th>
+                <th>Model</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in recent_processing %}
+                <tr>
+                  <td><a class="inline-link mono" href="/processing/{{ row.id }}">#{{ row.id }}</a></td>
+                  <td class="mono">{{ row.created_at|format_timestamp }}</td>
+                  <td>{{ format_user_label(row.user_id, row.full_name, row.username) }}</td>
+                  <td>{{ format_chat_label(row.chat_id, row.chat_type, row.title, row.chat_username) }}</td>
+                  <td>{{ row.media_type }}</td>
+                  <td><span class="badge {{ status_badge_class(row.status) }}">{{ format_status_label(row.status) }}</span></td>
+                  <td class="mono">{{ row.model_used or "-" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">No processing rows yet.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Recent Errors</h2>
+        <a class="inline-link" href="/errors">Open error list</a>
+      </div>
+      <div class="panel-body table-wrap">
+        {% if recent_errors %}
+          <table>
+            <thead>
+              <tr>
+                <th>Attempt</th>
+                <th>Started</th>
+                <th>Model</th>
+                <th>Processing</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in recent_errors %}
+                <tr>
+                  <td class="mono">#{{ row.attempt_id }}</td>
+                  <td class="mono">{{ row.attempt_started_at|format_timestamp }}</td>
+                  <td class="mono">{{ row.model_name }}</td>
+                  <td><a class="inline-link mono" href="/processing/{{ row.processing_id }}">#{{ row.processing_id }}</a></td>
+                  <td class="mono">{{ row.attempt_error_text|short_error }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">No failed attempts recorded.</div>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top: 18px;">
+    <div class="panel-head">
+      <h2>Top Users</h2>
+    </div>
+    <div class="panel-body table-wrap">
+      {% if dashboard.top_users %}
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>User ID</th>
+              <th>Total requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in dashboard.top_users %}
+              <tr>
+                <td>{{ row.username and ("@" ~ row.username) or (row.full_name or "без имени") }}</td>
+                <td class="mono">{{ row.user_id }}</td>
+                <td>{{ row.total_requests }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">No user stats yet.</div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

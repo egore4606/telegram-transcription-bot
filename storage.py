@@ -166,12 +166,17 @@ def utc_now() -> str:
 
 
 class Storage:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, read_only: bool = False) -> None:
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+        if not read_only:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self.read_only:
+            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
@@ -501,6 +506,177 @@ class Storage:
             ],
             "blocked_users": [row["user_id"] for row in blocked_rows],
         }
+
+    def get_dashboard_snapshot(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            processing_totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_processing,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_processing,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_processing,
+                    SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored_processing,
+                    SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END) AS rate_limited_processing,
+                    MAX(created_at) AS last_processed_at
+                FROM message_processing
+                """
+            ).fetchone()
+            failed_attempts = conn.execute(
+                """
+                SELECT COUNT(*) AS failed_attempts
+                FROM model_attempts
+                WHERE status != 'success'
+                """
+            ).fetchone()
+
+        stats_snapshot = self.get_stats_snapshot()
+        return {
+            "total_processing": processing_totals["total_processing"] or 0,
+            "success_processing": processing_totals["success_processing"] or 0,
+            "failed_processing": processing_totals["failed_processing"] or 0,
+            "ignored_processing": processing_totals["ignored_processing"] or 0,
+            "rate_limited_processing": processing_totals["rate_limited_processing"] or 0,
+            "failed_attempts": failed_attempts["failed_attempts"] or 0,
+            "last_processed_at": processing_totals["last_processed_at"],
+            "today": stats_snapshot["today"],
+            "voice_total": stats_snapshot["voice_total"],
+            "video_total": stats_snapshot["video_total"],
+            "top_users": stats_snapshot["top_users"],
+        }
+
+    def get_recent_processing(self, limit: int, status: str | None = None) -> list[dict[str, Any]]:
+        query = """
+            SELECT
+                mp.id,
+                mp.telegram_message_id,
+                mp.chat_id,
+                mp.user_id,
+                mp.media_type,
+                mp.duration_seconds,
+                mp.file_size_kb,
+                mp.scope_type,
+                mp.scope_id,
+                mp.mode,
+                mp.language,
+                mp.status,
+                mp.created_at,
+                mp.started_at,
+                mp.completed_at,
+                mp.processing_ms,
+                mp.raw_model_response,
+                mp.transcription_text,
+                mp.summary_text,
+                mp.final_reply_text,
+                mp.model_used,
+                mp.models_tried,
+                mp.fallback_key_used,
+                mp.error_code,
+                mp.error_text,
+                u.full_name,
+                u.username,
+                c.chat_type,
+                c.title,
+                c.username AS chat_username
+            FROM message_processing mp
+            LEFT JOIN users u ON u.user_id = mp.user_id
+            LEFT JOIN chats c ON c.chat_id = mp.chat_id
+        """
+        params: list[Any] = []
+        if status is not None:
+            query += " WHERE mp.status = ?"
+            params.append(status)
+        query += " ORDER BY mp.id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_recent_failed_attempts(self, limit: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    ma.id AS attempt_id,
+                    ma.message_processing_id,
+                    ma.attempt_no,
+                    ma.model_name,
+                    ma.api_key_slot,
+                    ma.status AS attempt_status,
+                    ma.error_text AS attempt_error_text,
+                    ma.started_at AS attempt_started_at,
+                    ma.completed_at AS attempt_completed_at,
+                    mp.id AS processing_id,
+                    mp.telegram_message_id,
+                    mp.chat_id,
+                    mp.user_id,
+                    mp.media_type,
+                    mp.status AS processing_status,
+                    mp.created_at AS processing_created_at,
+                    mp.processing_ms,
+                    mp.model_used,
+                    mp.error_code,
+                    u.full_name,
+                    u.username,
+                    c.chat_type,
+                    c.title,
+                    c.username AS chat_username
+                FROM model_attempts ma
+                INNER JOIN message_processing mp ON mp.id = ma.message_processing_id
+                LEFT JOIN users u ON u.user_id = mp.user_id
+                LEFT JOIN chats c ON c.chat_id = mp.chat_id
+                WHERE ma.status != 'success'
+                ORDER BY ma.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_processing_detail(self, processing_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    mp.*,
+                    u.full_name,
+                    u.username,
+                    c.chat_type,
+                    c.title,
+                    c.username AS chat_username
+                FROM message_processing mp
+                LEFT JOIN users u ON u.user_id = mp.user_id
+                LEFT JOIN chats c ON c.chat_id = mp.chat_id
+                WHERE mp.id = ?
+                LIMIT 1
+                """,
+                (processing_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_processing_attempts(self, processing_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id AS attempt_id,
+                    message_processing_id,
+                    attempt_no,
+                    model_name,
+                    api_key_slot,
+                    status AS attempt_status,
+                    error_text AS attempt_error_text,
+                    started_at AS attempt_started_at,
+                    completed_at AS attempt_completed_at
+                FROM model_attempts
+                WHERE message_processing_id = ?
+                ORDER BY attempt_no ASC, id ASC
+                """,
+                (processing_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_message_processing(
         self,

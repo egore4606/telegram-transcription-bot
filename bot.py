@@ -3,6 +3,7 @@ import html
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 from google import genai
 from google.genai import types
@@ -38,6 +39,10 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
 MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "45"))
+ADMIN_HISTORY_DEFAULT_LIMIT = 10
+ADMIN_HISTORY_MAX_LIMIT = 20
+ADMIN_PANEL_REPLY_LIMIT = 3500
+KNOWN_PROCESSING_STATUSES = {"started", "success", "failed", "ignored", "rate_limited"}
 
 GEMINI_MODEL_CHAIN: list[str] = []
 for model_name in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
@@ -79,6 +84,8 @@ USER_COMMANDS = [
 
 ADMIN_COMMANDS = [
     BotCommand("stats", "Показать статистику бота"),
+    BotCommand("history", "Показать последние обработки"),
+    BotCommand("last_errors", "Показать последние ошибки моделей"),
     BotCommand("block", "Заблокировать пользователя по user_id"),
     BotCommand("unblock", "Разблокировать пользователя по user_id"),
     BotCommand("broadcast_changelog", "Разослать текущий changelog в лички"),
@@ -198,6 +205,132 @@ def format_processing_time(seconds: float) -> str:
     return f"{minutes} мин {remaining_seconds:02d} сек"
 
 
+def format_timestamp(timestamp: str | None) -> str:
+    if not timestamp:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return timestamp
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def format_processing_ms(processing_ms: int | None) -> str:
+    if processing_ms is None:
+        return "-"
+    return format_processing_time(processing_ms / 1000)
+
+
+def parse_limit_arg(args: list[str], default: int, maximum: int, command_name: str) -> tuple[int | None, str | None]:
+    if not args:
+        return default, None
+    if len(args) != 1:
+        return None, f"Использование: /{command_name} [количество]"
+    try:
+        limit = int(args[0])
+    except ValueError:
+        return None, f"Использование: /{command_name} [количество]"
+    if limit < 1:
+        return None, "Количество должно быть положительным числом."
+    return min(limit, maximum), None
+
+
+def format_user_label(user_id: int | None, full_name: str | None, username: str | None) -> str:
+    if user_id is None:
+        return "без пользователя"
+    if username:
+        label = f"@{username}"
+    elif full_name:
+        label = full_name
+    else:
+        label = "без имени"
+    return f"{html.escape(label)} (<code>{user_id}</code>)"
+
+
+def format_chat_label(chat_id: int | None, chat_type: str | None, title: str | None, chat_username: str | None) -> str:
+    if chat_id is None:
+        return "без чата"
+    if chat_type == "private":
+        return f"личка (<code>{chat_id}</code>)"
+    if chat_username:
+        label = f"@{chat_username}"
+    elif title:
+        label = title
+    elif chat_type:
+        label = chat_type
+    else:
+        label = "неизвестный чат"
+    return f"{html.escape(label)} (<code>{chat_id}</code>)"
+
+
+def format_processing_status(status: str) -> str:
+    labels = {
+        "success": "✅ success",
+        "failed": "❌ failed",
+        "ignored": "🚫 ignored",
+        "rate_limited": "⏳ rate_limited",
+        "started": "⚙️ started",
+    }
+    return labels.get(status, html.escape(status))
+
+
+def shorten_text(text: str | None, limit: int = 180) -> str:
+    if not text:
+        return "-"
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
+
+
+def format_history_entry(entry: dict[str, object]) -> str:
+    media_icons = {"voice": "🎙", "video": "🔵"}
+    media_type = str(entry["media_type"])
+    model_used = entry["model_used"] or "-"
+    return (
+        f"<b>#{entry['id']}</b> — {html.escape(format_timestamp(entry['created_at']))}\n"
+        f"👤 {format_user_label(entry['user_id'], entry.get('full_name'), entry.get('username'))}\n"
+        f"💬 {format_chat_label(entry['chat_id'], entry.get('chat_type'), entry.get('title'), entry.get('chat_username'))}\n"
+        f"{media_icons.get(media_type, '📄')} {html.escape(media_type)} | "
+        f"{format_processing_status(str(entry['status']))} | "
+        f"<code>{html.escape(str(model_used))}</code> | "
+        f"{html.escape(format_processing_ms(entry.get('processing_ms')))}"
+    )
+
+
+def format_last_error_entry(entry: dict[str, object]) -> str:
+    error_text = shorten_text(str(entry.get("attempt_error_text") or "-"))
+    return (
+        f"<b>Attempt #{entry['attempt_id']}</b> — {html.escape(format_timestamp(entry['attempt_started_at']))}\n"
+        f"🤖 <code>{html.escape(str(entry['model_name']))}</code> | try {entry['attempt_no']} | "
+        f"{html.escape(str(entry['api_key_slot']))} | processing <code>#{entry['processing_id']}</code>\n"
+        f"👤 {format_user_label(entry['user_id'], entry.get('full_name'), entry.get('username'))}\n"
+        f"💬 {format_chat_label(entry['chat_id'], entry.get('chat_type'), entry.get('title'), entry.get('chat_username'))} | "
+        f"msg <code>{entry['telegram_message_id']}</code>\n"
+        f"⚠️ {html.escape(error_text)}"
+    )
+
+
+async def reply_html_entries(message, heading: str, entries: list[str]) -> None:
+    if not entries:
+        await message.reply_text(heading, parse_mode=ParseMode.HTML)
+        return
+
+    chunks: list[str] = []
+    current = heading
+    for entry in entries:
+        candidate = f"{current}\n\n{entry}"
+        if len(candidate) > ADMIN_PANEL_REPLY_LIMIT and current != heading:
+            chunks.append(current)
+            current = f"{heading}\n\n{entry}"
+            continue
+        current = candidate
+    chunks.append(current)
+
+    for chunk in chunks:
+        await message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+
 def get_settings_scope(message) -> tuple[tuple[str, int], str]:
     if message.chat.type in ("group", "supergroup"):
         return ("chat", message.chat.id), "для этой группы"
@@ -293,6 +426,8 @@ def build_help_text(user_id: int) -> str:
         sections.append(
             "\n\n<b>Команды администратора:</b>\n"
             "/stats — статистика и состояние бота\n"
+            "/history <code>[N]</code> — последние обработки из БД\n"
+            "/last_errors <code>[N]</code> — последние ошибки моделей\n"
             "/block <code>user_id</code> — заблокировать пользователя\n"
             "/unblock <code>user_id</code> — разблокировать пользователя\n"
             "/broadcast_changelog — разослать текущий changelog в личные чаты"
@@ -302,12 +437,19 @@ def build_help_text(user_id: int) -> str:
 
 
 async def sync_bot_commands(app: Application) -> None:
-    await app.bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
+    try:
+        await app.bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
+    except Exception as error:
+        logger.warning("BOT COMMAND SYNC ERROR | scope=default | error=%s", error)
+
     if ADMIN_USER_ID:
-        await app.bot.set_my_commands(
-            [*USER_COMMANDS, *ADMIN_COMMANDS],
-            scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
-        )
+        try:
+            await app.bot.set_my_commands(
+                [*USER_COMMANDS, *ADMIN_COMMANDS],
+                scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
+            )
+        except Exception as error:
+            logger.warning("BOT COMMAND SYNC ERROR | scope=admin | error=%s", error)
 
 
 async def post_init(app: Application) -> None:
@@ -750,6 +892,62 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администратора.")
+        return
+
+    limit, error_text = parse_limit_arg(
+        context.args,
+        default=ADMIN_HISTORY_DEFAULT_LIMIT,
+        maximum=ADMIN_HISTORY_MAX_LIMIT,
+        command_name="history",
+    )
+    if error_text:
+        await update.message.reply_text(error_text)
+        return
+
+    entries = STORAGE.get_recent_processing(limit=limit or ADMIN_HISTORY_DEFAULT_LIMIT)
+    if not entries:
+        await update.message.reply_text("ℹ️ В истории обработок пока нет записей.")
+        return
+
+    heading = (
+        "🗂 <b>Последние обработки</b>\n"
+        f"Показываю: <b>{len(entries)}</b>"
+    )
+    await reply_html_entries(update.message, heading, [format_history_entry(entry) for entry in entries])
+
+
+async def handle_last_errors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администратора.")
+        return
+
+    limit, error_text = parse_limit_arg(
+        context.args,
+        default=ADMIN_HISTORY_DEFAULT_LIMIT,
+        maximum=ADMIN_HISTORY_MAX_LIMIT,
+        command_name="last_errors",
+    )
+    if error_text:
+        await update.message.reply_text(error_text)
+        return
+
+    entries = STORAGE.get_recent_failed_attempts(limit=limit or ADMIN_HISTORY_DEFAULT_LIMIT)
+    if not entries:
+        await update.message.reply_text("✅ Ошибок model_attempts пока нет.")
+        return
+
+    heading = (
+        "🚨 <b>Последние ошибки моделей</b>\n"
+        f"Показываю: <b>{len(entries)}</b>"
+    )
+    await reply_html_entries(update.message, heading, [format_last_error_entry(entry) for entry in entries])
+
+
 async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -1188,6 +1386,8 @@ def main() -> None:
     app.add_handler(CommandHandler("feedback", handle_feedback))
     app.add_handler(CommandHandler("myid", handle_myid))
     app.add_handler(CommandHandler("stats", handle_stats))
+    app.add_handler(CommandHandler("history", handle_history))
+    app.add_handler(CommandHandler("last_errors", handle_last_errors))
     app.add_handler(CommandHandler("block", handle_block))
     app.add_handler(CommandHandler("unblock", handle_unblock))
     app.add_handler(CommandHandler("broadcast_changelog", handle_broadcast_changelog))

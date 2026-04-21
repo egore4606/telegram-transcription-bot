@@ -12,6 +12,23 @@ services:
       options:
         max-size: "10m"
         max-file: "30"
+  admin_panel:
+    build: .
+    restart: unless-stopped
+    command: ["python", "admin_panel.py"]
+    environment:
+      DATABASE_PATH: /data/bot.sqlite3
+      ADMIN_PANEL_HOST: 0.0.0.0
+      ADMIN_PANEL_PORT: 8081
+    volumes:
+      - bot_data:/data
+    ports:
+      - "127.0.0.1:8081:8081"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "10"
 
 volumes:
   bot_data:

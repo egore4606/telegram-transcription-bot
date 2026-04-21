@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Recent Failed Model Attempts</h2>
+      <span class="muted">Read-only recent rows from <span class="mono">model_attempts</span></span>
+    </div>
+    <div class="panel-body">
+      <form class="filters" method="get">
+        <label>
+          Limit
+          <input type="number" name="limit" min="1" max="200" value="{{ limit }}">
+        </label>
+        <button class="button" type="submit">Apply</button>
+      </form>
+
+      <div class="table-wrap">
+        {% if rows %}
+          <table>
+            <thead>
+              <tr>
+                <th>Attempt</th>
+                <th>Started</th>
+                <th>Model</th>
+                <th>Attempt no</th>
+                <th>User</th>
+                <th>Chat</th>
+                <th>Processing</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td class="mono">#{{ row.attempt_id }}</td>
+                  <td class="mono">{{ row.attempt_started_at|format_timestamp }}</td>
+                  <td class="mono">{{ row.model_name }}</td>
+                  <td>{{ row.attempt_no }}</td>
+                  <td>{{ format_user_label(row.user_id, row.full_name, row.username) }}</td>
+                  <td>{{ format_chat_label(row.chat_id, row.chat_type, row.title, row.chat_username) }}</td>
+                  <td>
+                    <a class="inline-link mono" href="/processing/{{ row.processing_id }}">#{{ row.processing_id }}</a>
+                    <div class="muted mono">msg {{ row.telegram_message_id }}</div>
+                  </td>
+                  <td class="mono">{{ row.attempt_error_text|short_error }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">No failed attempts recorded.</div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+{% endblock %}

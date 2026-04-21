@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Processing #{{ detail.id }}</h2>
+      <span class="badge {{ status_badge_class(detail.status) }}">{{ format_status_label(detail.status) }}</span>
+    </div>
+    <div class="panel-body">
+      <div class="kv">
+        <div class="kv-item">
+          <div class="k">Created</div>
+          <div class="v mono">{{ detail.created_at|format_timestamp }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Started</div>
+          <div class="v mono">{{ detail.started_at|format_timestamp }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Completed</div>
+          <div class="v mono">{{ detail.completed_at|format_timestamp }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Processing Time</div>
+          <div class="v mono">{{ detail.processing_ms|format_processing_ms }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">User</div>
+          <div class="v">{{ format_user_label(detail.user_id, detail.full_name, detail.username) }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Chat</div>
+          <div class="v">{{ format_chat_label(detail.chat_id, detail.chat_type, detail.title, detail.chat_username) }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Telegram Message ID</div>
+          <div class="v mono">{{ detail.telegram_message_id }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Media</div>
+          <div class="v">{{ detail.media_type }} · {{ detail.duration_seconds }}s · {{ detail.file_size_kb or "-" }} KB</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Mode / Language</div>
+          <div class="v mono">{{ detail.mode }} / {{ detail.language }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Model Used</div>
+          <div class="v mono">{{ detail.model_used or "-" }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Models Tried</div>
+          <div class="v mono">{{ detail.models_tried or "-" }}</div>
+        </div>
+        <div class="kv-item">
+          <div class="k">Error Code</div>
+          <div class="v mono">{{ detail.error_code or "-" }}</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top: 18px;">
+    <div class="panel-head">
+      <h3>Attempt Timeline</h3>
+    </div>
+    <div class="panel-body table-wrap">
+      {% if attempts %}
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Attempt</th>
+              <th>Model</th>
+              <th>Key slot</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Completed</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in attempts %}
+              <tr>
+                <td class="mono">#{{ row.attempt_id }}</td>
+                <td>{{ row.attempt_no }}</td>
+                <td class="mono">{{ row.model_name }}</td>
+                <td class="mono">{{ row.api_key_slot }}</td>
+                <td><span class="badge {{ status_badge_class(row.attempt_status) }}">{{ format_status_label(row.attempt_status) }}</span></td>
+                <td class="mono">{{ row.attempt_started_at|format_timestamp }}</td>
+                <td class="mono">{{ row.attempt_completed_at|format_timestamp }}</td>
+                <td class="mono">{{ row.attempt_error_text|short_error }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">No model attempts saved for this processing row.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top: 18px;">
+    <div class="panel-head">
+      <h3>Raw Model Response</h3>
+    </div>
+    <div class="panel-body">
+      <pre>{{ detail.raw_model_response or "-" }}</pre>
+    </div>
+  </section>
+
+  <section class="grid columns" style="margin-top: 18px;">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Transcription</h3>
+      </div>
+      <div class="panel-body">
+        <pre>{{ detail.transcription_text or "-" }}</pre>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Summary</h3>
+      </div>
+      <div class="panel-body">
+        <pre>{{ detail.summary_text or "-" }}</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top: 18px;">
+    <div class="panel-head">
+      <h3>Final Reply</h3>
+    </div>
+    <div class="panel-body">
+      <pre>{{ detail.final_reply_text or "-" }}</pre>
+    </div>
+  </section>
+{% endblock %}

@@ -18,6 +18,8 @@ Works in private chats and groups. Settings are scoped separately for personal c
 - Lets users send **feedback** directly to the admin
 - Syncs the Telegram **command menu automatically on startup**
 - Supports an explicit **admin-only changelog broadcast** command with deduplication per changelog version
+- Adds **admin inspection commands** for recent processing history and recent model errors
+- Includes a small **read-only admin panel** for stats, history, errors, and processing details
 - Archives processed voice/video requests and Gemini model attempts in SQLite
 - Saves daily Docker logs to `./logs/` with an **incremental backup script**
 - Runs in **Docker** and survives restarts
@@ -46,6 +48,8 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | Command | Description |
 |---|---|
 | `/stats` | Bot stats and runtime info |
+| `/history [N]` | Show recent processing rows from SQLite |
+| `/last_errors [N]` | Show recent failed model attempts |
 | `/block [user_id]` | Block a user globally |
 | `/unblock [user_id]` | Remove a global block |
 | `/broadcast_changelog` | Send the current changelog to known private-chat users |
@@ -54,6 +58,7 @@ The bot publishes these commands to Telegram Bot API automatically on startup:
 
 - the user command set is synced as the default command menu;
 - the admin chat gets an extended command set with both user and admin commands.
+- if Telegram Bot API command sync fails, the bot logs the error and still continues startup.
 
 ## How It Looks
 
@@ -181,6 +186,38 @@ To broadcast the current changelog:
 3. Run `/broadcast_changelog` from the admin account
 
 The bot records which `PUBLIC_CHANGELOG_VERSION` was already sent to which private-chat user, so the same release is not re-sent to the same person by accident.
+
+## Admin Panel
+
+The project includes a small read-only admin panel for operational inspection.
+
+What it shows:
+
+- dashboard with high-level stats
+- recent processing history
+- recent failed model attempts
+- detail page for one processing row, including attempts and saved outputs
+
+Security model:
+
+- the panel runs as a separate Docker service
+- it opens SQLite in **read-only connection mode**
+- it is published only on `127.0.0.1:8081` on the server
+- it is intended to be opened through SSH port forwarding, not exposed publicly
+
+Example SSH tunnel from your main computer:
+
+```bash
+ssh -L 8081:127.0.0.1:8081 root@your-server
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8081
+```
+
+The panel is intentionally operational and minimal. It does not provide write actions.
 
 ## Tests
 
