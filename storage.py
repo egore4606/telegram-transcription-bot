@@ -1,12 +1,164 @@
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_MODE = "both"
 DEFAULT_LANGUAGE = "auto"
-SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 3
+
+MIGRATION_1_SQL = """
+CREATE TABLE IF NOT EXISTS settings_scopes (
+    scope_type TEXT NOT NULL,
+    scope_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope_type, scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    scope_type TEXT NOT NULL,
+    scope_id INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    language TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope_type, scope_id),
+    FOREIGN KEY (scope_type, scope_id)
+        REFERENCES settings_scopes(scope_type, scope_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    username TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+    chat_id INTEGER PRIMARY KEY,
+    chat_type TEXT NOT NULL,
+    title TEXT,
+    username TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ignored_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    set_by_user_id INTEGER,
+    chat_id INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    request_ts REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_stats (
+    stat_date TEXT PRIMARY KEY,
+    voice_count INTEGER NOT NULL DEFAULT 0,
+    video_count INTEGER NOT NULL DEFAULT 0,
+    total_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS user_stats (
+    user_id INTEGER PRIMARY KEY,
+    total_requests INTEGER NOT NULL DEFAULT 0,
+    voice_count INTEGER NOT NULL DEFAULT 0,
+    video_count INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_processing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_message_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    media_type TEXT NOT NULL,
+    telegram_file_id TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    file_size_kb INTEGER,
+    scope_type TEXT NOT NULL,
+    scope_id INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    language TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    processing_ms INTEGER,
+    raw_model_response TEXT,
+    transcription_text TEXT,
+    summary_text TEXT,
+    final_reply_text TEXT,
+    model_used TEXT,
+    models_tried TEXT,
+    fallback_key_used INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    error_text TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS model_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_processing_id INTEGER NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    api_key_slot TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_text TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    FOREIGN KEY (message_processing_id)
+        REFERENCES message_processing(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ignored_users_lookup
+    ON ignored_users(user_id, source, chat_id);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_user_ts
+    ON rate_limits(user_id, request_ts);
+CREATE INDEX IF NOT EXISTS idx_message_processing_chat
+    ON message_processing(chat_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_message_processing_user
+    ON message_processing(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_model_attempts_processing
+    ON model_attempts(message_processing_id, attempt_no);
+"""
+
+MIGRATION_2_SQL = """
+CREATE TABLE IF NOT EXISTS pending_feedback (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_feedback_created
+    ON pending_feedback(created_at);
+"""
+
+MIGRATION_3_SQL = """
+CREATE TABLE IF NOT EXISTS changelog_broadcasts (
+    changelog_version TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (changelog_version, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_changelog_broadcasts_user
+    ON changelog_broadcasts(user_id, sent_at);
+"""
 
 
 def utc_now() -> str:
@@ -24,157 +176,66 @@ class Storage:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def _ensure_schema_version_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            )
+            """
+        )
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None:
+            conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+
+    def _get_schema_version(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None:
+            return 0
+        return int(row["version"])
+
+    def _set_schema_version(self, conn: sqlite3.Connection, version: int) -> None:
+        updated = conn.execute("UPDATE schema_version SET version = ?", (version,))
+        if updated.rowcount == 0:
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+
+    def _migration_1_initial_schema(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(MIGRATION_1_SQL)
+
+    def _migration_2_pending_feedback(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(MIGRATION_2_SQL)
+
+    def _migration_3_changelog_broadcasts(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(MIGRATION_3_SQL)
+
     def init_db(self) -> None:
+        migrations: dict[int, Callable[[sqlite3.Connection], None]] = {
+            1: self._migration_1_initial_schema,
+            2: self._migration_2_pending_feedback,
+            3: self._migration_3_changelog_broadcasts,
+        }
+
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER NOT NULL
+            self._ensure_schema_version_table(conn)
+            current_version = self._get_schema_version(conn)
+
+            if current_version > LATEST_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema version {current_version} is newer than supported "
+                    f"version {LATEST_SCHEMA_VERSION}."
                 )
-                """
-            )
-            row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
-            if row is None:
-                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
 
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS settings_scopes (
-                    scope_type TEXT NOT NULL,
-                    scope_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (scope_type, scope_id)
-                );
+            for version in range(current_version + 1, LATEST_SCHEMA_VERSION + 1):
+                migration = migrations[version]
+                with conn:
+                    migration(conn)
+                    self._set_schema_version(conn, version)
 
-                CREATE TABLE IF NOT EXISTS settings (
-                    scope_type TEXT NOT NULL,
-                    scope_id INTEGER NOT NULL,
-                    mode TEXT NOT NULL,
-                    language TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (scope_type, scope_id),
-                    FOREIGN KEY (scope_type, scope_id)
-                        REFERENCES settings_scopes(scope_type, scope_id)
-                        ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    full_name TEXT NOT NULL,
-                    username TEXT,
-                    first_seen_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS chats (
-                    chat_id INTEGER PRIMARY KEY,
-                    chat_type TEXT NOT NULL,
-                    title TEXT,
-                    username TEXT,
-                    first_seen_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS ignored_users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    source TEXT NOT NULL,
-                    set_by_user_id INTEGER,
-                    chat_id INTEGER,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS rate_limits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    request_ts REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS daily_stats (
-                    stat_date TEXT PRIMARY KEY,
-                    voice_count INTEGER NOT NULL DEFAULT 0,
-                    video_count INTEGER NOT NULL DEFAULT 0,
-                    total_count INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS user_stats (
-                    user_id INTEGER PRIMARY KEY,
-                    total_requests INTEGER NOT NULL DEFAULT 0,
-                    voice_count INTEGER NOT NULL DEFAULT 0,
-                    video_count INTEGER NOT NULL DEFAULT 0,
-                    last_seen_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS message_processing (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_message_id INTEGER NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    media_type TEXT NOT NULL,
-                    telegram_file_id TEXT NOT NULL,
-                    duration_seconds INTEGER NOT NULL,
-                    file_size_kb INTEGER,
-                    scope_type TEXT NOT NULL,
-                    scope_id INTEGER NOT NULL,
-                    mode TEXT NOT NULL,
-                    language TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    processing_ms INTEGER,
-                    raw_model_response TEXT,
-                    transcription_text TEXT,
-                    summary_text TEXT,
-                    final_reply_text TEXT,
-                    model_used TEXT,
-                    models_tried TEXT,
-                    fallback_key_used INTEGER NOT NULL DEFAULT 0,
-                    error_code TEXT,
-                    error_text TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id),
-                    FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS model_attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message_processing_id INTEGER NOT NULL,
-                    attempt_no INTEGER NOT NULL,
-                    model_name TEXT NOT NULL,
-                    api_key_slot TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error_text TEXT,
-                    started_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    FOREIGN KEY (message_processing_id)
-                        REFERENCES message_processing(id)
-                        ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS pending_feedback (
-                    chat_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (chat_id, user_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ignored_users_lookup
-                    ON ignored_users(user_id, source, chat_id);
-                CREATE INDEX IF NOT EXISTS idx_rate_limits_user_ts
-                    ON rate_limits(user_id, request_ts);
-                CREATE INDEX IF NOT EXISTS idx_message_processing_chat
-                    ON message_processing(chat_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_message_processing_user
-                    ON message_processing(user_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_model_attempts_processing
-                    ON model_attempts(message_processing_id, attempt_no);
-                CREATE INDEX IF NOT EXISTS idx_pending_feedback_created
-                    ON pending_feedback(created_at);
-                """
-            )
+    def get_schema_version(self) -> int:
+        with self._connect() as conn:
+            self._ensure_schema_version_table(conn)
+            return self._get_schema_version(conn)
 
     def upsert_user(self, user_id: int, full_name: str, username: str | None) -> None:
         now = utc_now()
@@ -330,11 +391,17 @@ class Storage:
         threshold = now_ts - window_seconds
         with self._connect() as conn:
             conn.execute(
-                "DELETE FROM rate_limits WHERE request_ts < ? OR user_id = ? AND request_ts < ?",
-                (threshold, user_id, threshold),
+                "DELETE FROM rate_limits WHERE user_id = ? AND request_ts < ?",
+                (user_id, threshold),
             )
 
-    def check_and_record_rate_limit(self, user_id: int, rate_limit: int, now_ts: float, window_seconds: int = 60) -> bool:
+    def check_and_record_rate_limit(
+        self,
+        user_id: int,
+        rate_limit: int,
+        now_ts: float,
+        window_seconds: int = 60,
+    ) -> bool:
         threshold = now_ts - window_seconds
         with self._connect() as conn:
             conn.execute(
@@ -404,9 +471,14 @@ class Storage:
             ).fetchone()
             top_rows = conn.execute(
                 """
-                SELECT user_id, total_requests
-                FROM user_stats
-                ORDER BY total_requests DESC, user_id ASC
+                SELECT
+                    s.user_id,
+                    s.total_requests,
+                    u.full_name,
+                    u.username
+                FROM user_stats s
+                LEFT JOIN users u ON u.user_id = s.user_id
+                ORDER BY s.total_requests DESC, s.user_id ASC
                 LIMIT 5
                 """
             ).fetchall()
@@ -418,7 +490,15 @@ class Storage:
             "today": today_row["total_count"] if today_row else 0,
             "voice_total": totals["voice_total"],
             "video_total": totals["video_total"],
-            "top_users": [(str(row["user_id"]), row["total_requests"]) for row in top_rows],
+            "top_users": [
+                {
+                    "user_id": row["user_id"],
+                    "full_name": row["full_name"],
+                    "username": row["username"],
+                    "total_requests": row["total_requests"],
+                }
+                for row in top_rows
+            ],
             "blocked_users": [row["user_id"] for row in blocked_rows],
         }
 
@@ -546,6 +626,24 @@ class Storage:
                 ),
             )
 
+    def list_model_attempts(self, message_processing_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    attempt_no,
+                    model_name,
+                    api_key_slot,
+                    status,
+                    error_text
+                FROM model_attempts
+                WHERE message_processing_id = ?
+                ORDER BY attempt_no ASC, id ASC
+                """,
+                (message_processing_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def set_pending_feedback(self, chat_id: int, user_id: int) -> None:
         now = utc_now()
         with self._connect() as conn:
@@ -578,3 +676,44 @@ class Storage:
                 "DELETE FROM pending_feedback WHERE chat_id = ? AND user_id = ?",
                 (chat_id, user_id),
             )
+
+    def list_private_chat_users(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.user_id,
+                    u.full_name,
+                    u.username
+                FROM users u
+                INNER JOIN chats c
+                    ON c.chat_id = u.user_id
+                WHERE c.chat_type = 'private'
+                ORDER BY u.user_id ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def has_changelog_been_sent(self, changelog_version: str, user_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM changelog_broadcasts
+                WHERE changelog_version = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (changelog_version, user_id),
+            ).fetchone()
+        return row is not None
+
+    def mark_changelog_sent(self, changelog_version: str, user_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO changelog_broadcasts (changelog_version, user_id, sent_at)
+                VALUES (?, ?, ?)
+                """,
+                (changelog_version, user_id, utc_now()),
+            )
+            return cur.rowcount > 0

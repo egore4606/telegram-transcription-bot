@@ -6,7 +6,7 @@ import time
 
 from google import genai
 from google.genai import types
-from telegram import Update
+from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -37,6 +37,7 @@ DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/bot.sqlite3")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
+MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "45"))
 
 GEMINI_MODEL_CHAIN: list[str] = []
 for model_name in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
@@ -49,6 +50,7 @@ if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
 
 STORAGE = Storage(DATABASE_PATH)
+PUBLIC_CHANGELOG_VERSION = "2026-04-21"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
@@ -60,6 +62,27 @@ PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 - появилась команда <code>/changelog</code> — можно в любой момент посмотреть последние изменения.
 
 Если заметишь что-то странное в работе бота, отправь <code>/feedback твой текст</code>."""
+
+USER_COMMANDS = [
+    BotCommand("start", "Запустить бота"),
+    BotCommand("help", "Показать команды и подсказки"),
+    BotCommand("both", "Транскрипция и краткое содержание"),
+    BotCommand("transcription_only", "Только транскрипция"),
+    BotCommand("summary_only", "Только краткое содержание"),
+    BotCommand("tldr", "Одно предложение с самой сутью"),
+    BotCommand("language", "Настроить язык ответа"),
+    BotCommand("myid", "Показать ваш Telegram ID"),
+    BotCommand("feedback", "Отправить feedback администратору"),
+    BotCommand("changelog", "Показать последние изменения"),
+    BotCommand("ignore", "Игнорировать пользователя в группе по reply"),
+]
+
+ADMIN_COMMANDS = [
+    BotCommand("stats", "Показать статистику бота"),
+    BotCommand("block", "Заблокировать пользователя по user_id"),
+    BotCommand("unblock", "Разблокировать пользователя по user_id"),
+    BotCommand("broadcast_changelog", "Разослать текущий changelog в лички"),
+]
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -104,6 +127,21 @@ def build_prompt(media_type: str, language: str, mode: str) -> str:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def extract_section(raw: str, start_label: str, end_labels: tuple[str, ...]) -> str:
+    upper = raw.upper()
+    start_idx = upper.find(start_label)
+    if start_idx == -1:
+        return ""
+
+    content_start = start_idx + len(start_label)
+    content_end = len(raw)
+    for end_label in end_labels:
+        end_idx = upper.find(end_label, content_start)
+        if end_idx != -1:
+            content_end = min(content_end, end_idx)
+    return raw[content_start:content_end].strip()
+
+
 def is_quota_error(error: Exception) -> bool:
     err_str = str(error).lower()
     return (
@@ -117,6 +155,8 @@ def is_quota_error(error: Exception) -> bool:
 def is_model_overloaded_error(error: Exception) -> bool:
     err_str = str(error).lower()
     return (
+        "model_request_timeout" in err_str
+        or
         "503" in str(error)
         or "status': 'unavailable'" in err_str
         or '"status": "unavailable"' in err_str
@@ -128,6 +168,8 @@ def is_model_overloaded_error(error: Exception) -> bool:
 
 def extract_error_code(error: Exception) -> str:
     err_str = str(error).lower()
+    if "model_request_timeout" in err_str:
+        return "model_request_timeout"
     if is_model_overloaded_error(error):
         return "model_overloaded"
     if is_quota_error(error):
@@ -162,21 +204,35 @@ def get_settings_scope(message) -> tuple[tuple[str, int], str]:
     return ("user", message.from_user.id), "для тебя"
 
 
+def remember_context(update: Update) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user is not None:
+        STORAGE.upsert_user(user.id, user.full_name, user.username)
+
+    if chat is not None:
+        STORAGE.upsert_chat(
+            chat.id,
+            chat.type,
+            getattr(chat, "title", None),
+            getattr(chat, "username", None),
+        )
+
+
 def parse_response_sections(raw: str, mode: str) -> tuple[str, str]:
     raw = raw.strip()
-    upper = raw.upper()
-
-    transcription_idx = upper.find("ТРАНСКРИПЦИЯ:")
-    summary_idx = upper.find("КРАТКОЕ СОДЕРЖАНИЕ:")
 
     if mode == "tldr":
-        if summary_idx != -1:
-            return "", raw[summary_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
+        summary = extract_section(raw, "КРАТКОЕ СОДЕРЖАНИЕ:", tuple())
+        if summary:
+            return "", summary
         return "", raw
 
-    if transcription_idx != -1 and summary_idx != -1:
-        transcription = raw[transcription_idx + len("ТРАНСКРИПЦИЯ:"):summary_idx].strip()
-        summary = raw[summary_idx + len("КРАТКОЕ СОДЕРЖАНИЕ:"):].strip()
+    transcription = extract_section(raw, "ТРАНСКРИПЦИЯ:", ("КРАТКОЕ СОДЕРЖАНИЕ:",))
+    summary = extract_section(raw, "КРАТКОЕ СОДЕРЖАНИЕ:", ("ТРАНСКРИПЦИЯ:",))
+
+    if transcription or summary:
         return transcription, summary
 
     return raw, ""
@@ -210,6 +266,52 @@ def build_final_reply(
         f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>\n\n"
     )
     return header + format_response(raw, mode)
+
+
+def build_help_text(user_id: int) -> str:
+    sections = [
+        "<b>Команды:</b>\n\n"
+        "🎙 Просто отправь голосовое или кружочек — бот расшифрует\n\n"
+        "Настройки в личке и в каждой группе хранятся отдельно.\n\n"
+        "<b>Режим вывода:</b>\n"
+        "/both — транскрипция + саммари <i>(по умолчанию)</i>\n"
+        "/transcription_only — только транскрипция\n"
+        "/summary_only — только краткое содержание\n"
+        "/tldr — одно предложение, самая суть\n\n"
+        "<b>Язык ответа:</b>\n"
+        "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
+        "/language ru | en | de | ... — перевести\n\n"
+        "<b>Прочее:</b>\n"
+        "/myid — узнать свой Telegram ID\n"
+        "/feedback — бот попросит следующим сообщением написать feedback\n"
+        "/feedback <code>&lt;текст&gt;</code> — отправить feedback сразу одной командой\n"
+        "/changelog — посмотреть последние изменения\n"
+        "/ignore — ответить в группе на сообщение пользователя, чтобы игнорировать/вернуть его"
+    ]
+
+    if is_admin(user_id):
+        sections.append(
+            "\n\n<b>Команды администратора:</b>\n"
+            "/stats — статистика и состояние бота\n"
+            "/block <code>user_id</code> — заблокировать пользователя\n"
+            "/unblock <code>user_id</code> — разблокировать пользователя\n"
+            "/broadcast_changelog — разослать текущий changelog в личные чаты"
+        )
+
+    return "".join(sections)
+
+
+async def sync_bot_commands(app: Application) -> None:
+    await app.bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
+    if ADMIN_USER_ID:
+        await app.bot.set_my_commands(
+            [*USER_COMMANDS, *ADMIN_COMMANDS],
+            scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
+        )
+
+
+async def post_init(app: Application) -> None:
+    await sync_bot_commands(app)
 
 
 def friendly_error(error: Exception) -> str:
@@ -343,9 +445,13 @@ async def call_gemini(
         started_at = utc_now()
 
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_name,
+                    contents=contents,
+                ),
+                timeout=MODEL_REQUEST_TIMEOUT,
             )
             completed_at = utc_now()
             STORAGE.add_model_attempt(
@@ -361,6 +467,26 @@ async def call_gemini(
             if client_index > 0:
                 run_meta["fallback_key_used"] = True
             return response.text
+        except asyncio.TimeoutError:
+            error = RuntimeError(
+                f"model_request_timeout: generate_content exceeded {MODEL_REQUEST_TIMEOUT}s for {model_name}"
+            )
+            completed_at = utc_now()
+            STORAGE.add_model_attempt(
+                message_processing_id=message_processing_id,
+                attempt_no=attempt_no,
+                model_name=model_name,
+                api_key_slot=api_key_slot,
+                status="error",
+                started_at=started_at,
+                completed_at=completed_at,
+                error_text=shorten_error(error),
+            )
+            run_meta["attempt_no"] = attempt_no + 1
+            if client_index > 0:
+                run_meta["fallback_key_used"] = True
+            last_error = error
+            break
         except Exception as error:
             completed_at = utc_now()
             STORAGE.add_model_attempt(
@@ -451,6 +577,7 @@ async def call_gemini_with_retries(
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     await update.message.reply_text(
         "👋 Привет! Я бот для расшифровки голосовых сообщений и кружочков.\n\n"
         "Просто отправь мне 🎙 голосовое или 🔵 кружочек — я:\n"
@@ -462,32 +589,20 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     await update.message.reply_text(
-        "<b>Команды:</b>\n\n"
-        "🎙 Просто отправь голосовое или кружочек — бот расшифрует\n\n"
-        "Настройки в личке и в каждой группе хранятся отдельно.\n\n"
-        "<b>Режим вывода:</b>\n"
-        "/both — транскрипция + саммари <i>(по умолчанию)</i>\n"
-        "/transcription_only — только транскрипция\n"
-        "/summary_only — только краткое содержание\n"
-        "/tldr — одно предложение, самая суть\n\n"
-        "<b>Язык ответа:</b>\n"
-        "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
-        "/language ru | en | de | ... — перевести\n\n"
-        "<b>Прочее:</b>\n"
-        "/myid — узнать свой Telegram ID\n"
-        "/changelog — что нового в боте\n"
-        "/feedback — бот попросит следующим сообщением написать feedback\n"
-        "/feedback <code>&lt;текст&gt;</code> — отправить feedback сразу одной командой\n",
+        build_help_text(update.effective_user.id),
         parse_mode=ParseMode.HTML,
     )
 
 
 async def handle_changelog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     await update.message.reply_text(PUBLIC_CHANGELOG_TEXT, parse_mode=ParseMode.HTML)
 
 
 async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     uid = update.effective_user.id
     name = update.effective_user.full_name
     await update.message.reply_text(
@@ -497,6 +612,7 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     if ADMIN_USER_ID == 0:
         await update.message.reply_text("⚠️ Команда временно недоступна: администратор не настроен.")
         return
@@ -559,6 +675,7 @@ async def handle_pending_feedback_message(update: Update, context: ContextTypes.
     if message is None or message.text is None:
         return
 
+    remember_context(update)
     chat_id = message.chat.id
     user_id = message.from_user.id
     if not STORAGE.has_pending_feedback(chat_id, user_id):
@@ -586,6 +703,7 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
@@ -593,8 +711,23 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     snapshot = STORAGE.get_stats_snapshot()
     backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
 
+    def format_top_user(entry: dict[str, object]) -> str:
+        username = entry.get("username")
+        full_name = entry.get("full_name")
+        user_id = entry["user_id"]
+        total_requests = entry["total_requests"]
+
+        if username:
+            label = f"@{username}"
+        elif full_name:
+            label = str(full_name)
+        else:
+            label = "без имени"
+
+        return f"  {html.escape(label)} (<code>{user_id}</code>): {total_requests}"
+
     top_text = "\n".join(
-        f"  <code>{uid}</code>: {count}" for uid, count in snapshot["top_users"]
+        format_top_user(entry) for entry in snapshot["top_users"]
     ) or "  нет данных"
 
     blocked_text = "\n".join(
@@ -618,6 +751,7 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
     scope_type, scope_id = scope_key
 
@@ -640,6 +774,7 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def handle_transcription_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
     STORAGE.set_mode(scope_key[0], scope_key[1], "transcription_only")
     await update.message.reply_text(
@@ -649,6 +784,7 @@ async def handle_transcription_only(update: Update, context: ContextTypes.DEFAUL
 
 
 async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
     STORAGE.set_mode(scope_key[0], scope_key[1], "summary_only")
     await update.message.reply_text(
@@ -658,6 +794,7 @@ async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
     STORAGE.set_mode(scope_key[0], scope_key[1], "tldr")
     await update.message.reply_text(
@@ -667,6 +804,7 @@ async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
     STORAGE.set_mode(scope_key[0], scope_key[1], "both")
     await update.message.reply_text(
@@ -676,6 +814,7 @@ async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
@@ -707,6 +846,7 @@ async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
@@ -742,6 +882,7 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
     message = update.message
 
     if message.chat.type not in ("group", "supergroup"):
@@ -771,6 +912,56 @@ async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+async def handle_broadcast_changelog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администратора.")
+        return
+
+    recipients = STORAGE.list_private_chat_users()
+    if not recipients:
+        await update.message.reply_text("ℹ️ В базе пока нет пользователей, которым можно отправить changelog в личку.")
+        return
+
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+
+    for recipient in recipients:
+        user_id = int(recipient["user_id"])
+        if STORAGE.has_changelog_been_sent(PUBLIC_CHANGELOG_VERSION, user_id):
+            skipped_count += 1
+            continue
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=PUBLIC_CHANGELOG_TEXT,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as error:
+            failed_count += 1
+            logger.warning(
+                "CHANGELOG BROADCAST ERROR | version=%s | user=%d | error=%s",
+                PUBLIC_CHANGELOG_VERSION,
+                user_id,
+                error,
+            )
+            continue
+
+        STORAGE.mark_changelog_sent(PUBLIC_CHANGELOG_VERSION, user_id)
+        sent_count += 1
+
+    await update.message.reply_text(
+        "📣 <b>Рассылка changelog завершена</b>\n\n"
+        f"Версия: <code>{html.escape(PUBLIC_CHANGELOG_VERSION)}</code>\n"
+        f"Отправлено: <b>{sent_count}</b>\n"
+        f"Пропущено как уже отправленное: <b>{skipped_count}</b>\n"
+        f"Ошибок доставки: <b>{failed_count}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # ── Media handlers ────────────────────────────────────────────────────────────
 
 
@@ -780,14 +971,12 @@ async def handle_media(
     media_type: str,
 ) -> None:
     message = update.message
+    remember_context(update)
     user = message.from_user
     user_id = user.id
     user_name = user.full_name
     chat_id = message.chat.id
     chat_title = get_chat_title(message)
-
-    STORAGE.upsert_user(user_id, user_name, user.username)
-    STORAGE.upsert_chat(chat_id, message.chat.type, message.chat.title, message.chat.username)
 
     scope_key, _ = get_settings_scope(message)
     scope_type, scope_id = scope_key
@@ -991,7 +1180,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def main() -> None:
     STORAGE.init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
@@ -1001,6 +1190,7 @@ def main() -> None:
     app.add_handler(CommandHandler("stats", handle_stats))
     app.add_handler(CommandHandler("block", handle_block))
     app.add_handler(CommandHandler("unblock", handle_unblock))
+    app.add_handler(CommandHandler("broadcast_changelog", handle_broadcast_changelog))
     app.add_handler(CommandHandler("language", handle_language))
     app.add_handler(CommandHandler("transcription_only", handle_transcription_only))
     app.add_handler(CommandHandler("summary_only", handle_summary_only))
