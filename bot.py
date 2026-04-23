@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -9,6 +10,7 @@ from google import genai
 from google.genai import types
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from storage import Storage, utc_now
@@ -39,6 +41,7 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
 MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "45"))
+PENDING_FEEDBACK_TTL_SECONDS = int(os.environ.get("PENDING_FEEDBACK_TTL_SECONDS", "900"))
 ADMIN_HISTORY_DEFAULT_LIMIT = 10
 ADMIN_HISTORY_MAX_LIMIT = 20
 ADMIN_PANEL_REPLY_LIMIT = 3500
@@ -456,6 +459,33 @@ async def post_init(app: Application) -> None:
     await sync_bot_commands(app)
 
 
+def feedback_hint_text() -> str:
+    return (
+        "Если проблема повторится, отправь <code>/feedback</code>, "
+        "и следующим сообщением я перешлю описание администратору."
+    )
+
+
+def unknown_internal_error_text() -> str:
+    return (
+        "⚠️ Внутренняя ошибка. Попробуй ещё раз через пару секунд.\n"
+        f"{feedback_hint_text()}"
+    )
+
+
+def get_retry_after_seconds(error: Exception) -> int | None:
+    if isinstance(error, RetryAfter):
+        try:
+            return max(1, int(float(error.retry_after)))
+        except (TypeError, ValueError):
+            return 1
+
+    match = re.search(r"retry in (\d+) seconds?", str(error).lower())
+    if match:
+        return max(1, int(match.group(1)))
+    return None
+
+
 def friendly_error(error: Exception) -> str:
     err_str = str(error).lower()
     if is_model_overloaded_error(error):
@@ -471,7 +501,7 @@ def friendly_error(error: Exception) -> str:
         return "❌ Файл слишком большой (макс. 20 МБ)."
     if "invalid" in err_str or "unsupported" in err_str:
         return "❌ Формат файла не поддерживается."
-    return f"⚠️ Что-то пошло не так. Попробуй ещё раз.\n<code>{html.escape(str(error)[:200])}</code>"
+    return unknown_internal_error_text()
 
 
 def is_admin(user_id: int) -> bool:
@@ -524,6 +554,9 @@ class ProcessingProgress:
         self.started_monotonic = time.monotonic()
         self._last_rendered_text = ""
         self._stop_event = asyncio.Event()
+        self._refresh_lock = asyncio.Lock()
+        self._retry_after_until = 0.0
+        self._flood_notice_sent = False
 
     def elapsed_seconds(self) -> float:
         return time.monotonic() - self.started_monotonic
@@ -538,19 +571,50 @@ class ProcessingProgress:
         )
 
     async def refresh(self) -> None:
-        rendered = self.render()
-        if rendered == self._last_rendered_text:
-            return
-        await safe_edit_text(self.message, rendered)
-        self._last_rendered_text = rendered
+        async with self._refresh_lock:
+            rendered = self.render()
+            if rendered == self._last_rendered_text:
+                return
+            if time.monotonic() < self._retry_after_until:
+                return
+            try:
+                await safe_edit_text(self.message, rendered)
+            except Exception as error:
+                retry_after = get_retry_after_seconds(error)
+                if retry_after is None:
+                    raise
+                await self.handle_flood_control(retry_after)
+                return
+            self._last_rendered_text = rendered
 
     async def set_status_text(self, status_text: str) -> None:
         self.status_text = status_text
         await self.refresh()
 
+    async def handle_flood_control(self, retry_after: int) -> None:
+        self._retry_after_until = max(self._retry_after_until, time.monotonic() + retry_after)
+        logger.warning(
+            "PROGRESS MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
+            retry_after,
+            getattr(self.message, "message_id", "unknown"),
+        )
+        if self._flood_notice_sent:
+            return
+        self._flood_notice_sent = True
+        try:
+            await self.message.reply_text(
+                "⏳ Telegram временно ограничил обновление таймера.\n"
+                "Обработка продолжается. Готовый результат я всё равно отправлю, как только лимит спадёт."
+            )
+        except Exception as notify_error:
+            logger.warning("PROGRESS FLOOD NOTICE FAILED | error=%s", notify_error)
+
     async def run(self) -> None:
         while not self._stop_event.is_set():
-            await self.refresh()
+            try:
+                await self.refresh()
+            except Exception as error:
+                logger.warning("PROGRESS REFRESH ERROR | error=%s", error)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=1)
             except asyncio.TimeoutError:
@@ -568,6 +632,48 @@ async def show_overload_countdown(progress: ProcessingProgress, model_name: str)
             f"Пробую снова через <b>{seconds_left}</b> сек...",
         )
         await asyncio.sleep(1)
+
+
+async def stop_progress(progress: ProcessingProgress, progress_task: asyncio.Task) -> None:
+    progress.stop()
+    try:
+        await progress_task
+    except Exception as error:
+        logger.warning("PROGRESS TASK ERROR | error=%s", error)
+
+
+async def deliver_processing_reply(message, text: str) -> None:
+    try:
+        await safe_edit_text(message, text)
+        return
+    except Exception as error:
+        retry_after = get_retry_after_seconds(error)
+        if retry_after is None:
+            logger.warning("FINAL MESSAGE EDIT FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
+            await message.reply_text(text, parse_mode=ParseMode.HTML)
+            return
+
+        logger.warning(
+            "FINAL MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
+            retry_after,
+            getattr(message, "message_id", "unknown"),
+        )
+        try:
+            await message.reply_text(
+                "⏳ Telegram временно ограничил обновление этого сообщения.\n"
+                "Подожди немного, я пришлю готовый результат сразу после ограничения."
+            )
+        except Exception as notify_error:
+            logger.warning("FINAL FLOOD NOTICE FAILED | error=%s", notify_error)
+
+        await asyncio.sleep(retry_after)
+        try:
+            await safe_edit_text(message, text)
+            return
+        except Exception as second_error:
+            logger.warning("FINAL EDIT RETRY FAILED | error=%s", second_error)
+
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 # ── Gemini call with fallback ─────────────────────────────────────────────────
@@ -765,7 +871,8 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not context.args:
         STORAGE.set_pending_feedback(chat.id, user.id)
         await update.message.reply_text(
-            "✍️ Напиши следующим сообщением свой feedback, и я отправлю его администратору.\n\n"
+            "✍️ Следующее текстовое сообщение в этом чате в течение 15 минут "
+            "я отправлю администратору как feedback.\n\n"
             "Если хочешь, можешь и сразу одной командой:\n"
             "<code>/feedback Иногда слишком долго отвечает на кружочки</code>",
             parse_mode=ParseMode.HTML,
@@ -820,7 +927,7 @@ async def handle_pending_feedback_message(update: Update, context: ContextTypes.
     remember_context(update)
     chat_id = message.chat.id
     user_id = message.from_user.id
-    if not STORAGE.has_pending_feedback(chat_id, user_id):
+    if not STORAGE.has_pending_feedback(chat_id, user_id, max_age_seconds=PENDING_FEEDBACK_TTL_SECONDS):
         return
 
     feedback_text = message.text.strip()
@@ -839,7 +946,7 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        await message.reply_text("⚠️ Внутренняя ошибка. Попробуй ещё раз через пару секунд.")
+        await message.reply_text(unknown_internal_error_text(), parse_mode=ParseMode.HTML)
     except Exception as error:
         logger.error("ERROR HANDLER FAILED | error=%s", error)
 
@@ -1298,9 +1405,8 @@ async def handle_media(
             mode,
             processing_time_text,
         )
-        progress.stop()
-        await progress_task
-        await safe_edit_text(processing, final_reply)
+        await stop_progress(progress, progress_task)
+        await deliver_processing_reply(processing, final_reply)
 
         STORAGE.increment_stats(user_id, media_type)
         STORAGE.update_message_processing(
@@ -1337,8 +1443,7 @@ async def handle_media(
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
         user_error_text = friendly_error(error)
-        progress.stop()
-        await progress_task
+        await stop_progress(progress, progress_task)
 
         STORAGE.update_message_processing(
             message_processing_id,
@@ -1362,7 +1467,7 @@ async def handle_media(
             elapsed_seconds,
             error,
         )
-        await safe_edit_text(processing, user_error_text)
+        await deliver_processing_reply(processing, user_error_text)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

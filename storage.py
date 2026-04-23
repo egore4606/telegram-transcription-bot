@@ -833,18 +833,36 @@ class Storage:
                 (chat_id, user_id, now),
             )
 
-    def has_pending_feedback(self, chat_id: int, user_id: int) -> bool:
+    def has_pending_feedback(self, chat_id: int, user_id: int, max_age_seconds: int | None = None) -> bool:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT 1
+                SELECT created_at
                 FROM pending_feedback
                 WHERE chat_id = ? AND user_id = ?
                 LIMIT 1
                 """,
                 (chat_id, user_id),
             ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+
+        if max_age_seconds is None:
+            return True
+
+        created_at_raw = row["created_at"]
+        try:
+            created_at = datetime.fromisoformat(created_at_raw)
+        except ValueError:
+            self.clear_pending_feedback(chat_id, user_id)
+            return False
+
+        age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+        if age_seconds <= max_age_seconds:
+            return True
+
+        self.clear_pending_feedback(chat_id, user_id)
+        return False
 
     def clear_pending_feedback(self, chat_id: int, user_id: int) -> None:
         with self._connect() as conn:

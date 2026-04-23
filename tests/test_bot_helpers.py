@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import bot
+from telegram.error import RetryAfter
 
 
 def test_parse_response_sections_standard_response() -> None:
@@ -170,6 +171,51 @@ def test_format_last_error_entry_escapes_error_text() -> None:
     assert "@alice" in rendered
     assert "msg <code>500</code>" in rendered
     assert "bad &lt;tag&gt; &amp; boom" in rendered
+
+
+def test_friendly_error_unknown_suggests_feedback() -> None:
+    rendered = bot.friendly_error(RuntimeError("boom"))
+
+    assert "Внутренняя ошибка" in rendered
+    assert "/feedback" in rendered
+
+
+def test_get_retry_after_seconds_from_retry_after_error() -> None:
+    assert bot.get_retry_after_seconds(RetryAfter(24)) == 24
+
+
+def test_processing_progress_handles_flood_control_without_crashing() -> None:
+    message = Mock()
+    message.message_id = 777
+    message.edit_text = AsyncMock(side_effect=RetryAfter(24))
+    message.reply_text = AsyncMock()
+    progress = bot.ProcessingProgress(message, "⏱ Обработка...")
+
+    asyncio.run(progress.refresh())
+    asyncio.run(progress.refresh())
+
+    assert message.edit_text.await_count == 1
+    assert message.reply_text.await_count == 1
+
+
+def test_deliver_processing_reply_retries_after_flood(monkeypatch) -> None:
+    sleep_calls = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(bot.asyncio, "sleep", fake_sleep)
+
+    message = Mock()
+    message.message_id = 888
+    message.edit_text = AsyncMock(side_effect=[RetryAfter(3), None])
+    message.reply_text = AsyncMock()
+
+    asyncio.run(bot.deliver_processing_reply(message, "<b>done</b>"))
+
+    assert message.edit_text.await_count == 2
+    assert message.reply_text.await_count == 1
+    assert sleep_calls == [3]
 
 
 def test_sync_bot_commands_does_not_raise_on_bot_api_error(caplog) -> None:

@@ -39,7 +39,7 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | `/language [code]` | Set response language: `auto`, `ru`, `en`, `de`, ... |
 | `/myid` | Show your Telegram user ID |
 | `/changelog` | Show the current public changelog |
-| `/feedback` | Bot asks for feedback in the next message |
+| `/feedback` | Bot forwards your next text message from the same chat as feedback for 15 minutes |
 | `/feedback [text]` | Send feedback immediately in one command |
 | `/ignore` | In groups, reply to a user message to toggle ignore *(group admins only)* |
 

@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from storage import LATEST_SCHEMA_VERSION, MIGRATION_1_SQL, Storage
 
@@ -60,6 +61,21 @@ def test_feedback_pending_state_roundtrip(tmp_path) -> None:
 
     storage.clear_pending_feedback(chat_id=10, user_id=20)
 
+    assert storage.has_pending_feedback(chat_id=10, user_id=20) is False
+
+
+def test_feedback_pending_state_expires_and_is_cleared(tmp_path) -> None:
+    storage = make_storage(tmp_path)
+
+    storage.set_pending_feedback(chat_id=10, user_id=20)
+    stale_timestamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    with sqlite3.connect(storage.db_path) as conn:
+        conn.execute(
+            "UPDATE pending_feedback SET created_at = ? WHERE chat_id = ? AND user_id = ?",
+            (stale_timestamp, 10, 20),
+        )
+
+    assert storage.has_pending_feedback(chat_id=10, user_id=20, max_age_seconds=900) is False
     assert storage.has_pending_feedback(chat_id=10, user_id=20) is False
 
 
