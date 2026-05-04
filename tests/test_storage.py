@@ -26,6 +26,8 @@ def test_init_db_sets_latest_schema_version_on_empty_database(tmp_path) -> None:
 
     assert "pending_feedback" in tables
     assert "changelog_broadcasts" in tables
+    assert "command_rate_limits" in tables
+    assert "command_rate_limit_warnings" in tables
 
 
 def test_init_db_migrates_existing_version_one_database(tmp_path) -> None:
@@ -50,6 +52,8 @@ def test_init_db_migrates_existing_version_one_database(tmp_path) -> None:
 
     assert "pending_feedback" in tables
     assert "changelog_broadcasts" in tables
+    assert "command_rate_limits" in tables
+    assert "command_rate_limit_warnings" in tables
 
 
 def test_feedback_pending_state_roundtrip(tmp_path) -> None:
@@ -153,6 +157,80 @@ def test_prune_rate_limits_removes_old_rows_for_user(tmp_path) -> None:
         ).fetchone()[0]
 
     assert remaining == 0
+
+
+def test_group_ignore_only_matches_that_group(tmp_path) -> None:
+    storage = make_storage(tmp_path)
+
+    assert storage.toggle_group_ignore(chat_id=-100, target_user_id=10, actor_user_id=1) is True
+
+    assert storage.is_group_ignored(chat_id=-100, user_id=10) is True
+    assert storage.is_user_ignored(user_id=10, chat_id=-100) is True
+    assert storage.is_group_ignored(chat_id=-200, user_id=10) is False
+    assert storage.is_user_ignored(user_id=10, chat_id=-200) is False
+    assert storage.is_globally_blocked(user_id=10) is False
+
+
+def test_global_block_matches_private_and_every_group(tmp_path) -> None:
+    storage = make_storage(tmp_path)
+
+    storage.add_admin_block(target_user_id=10, admin_user_id=1)
+
+    assert storage.is_globally_blocked(user_id=10) is True
+    assert storage.is_user_ignored(user_id=10, chat_id=10) is True
+    assert storage.is_user_ignored(user_id=10, chat_id=-100) is True
+    assert storage.list_global_blocked_user_ids() == [10]
+
+
+def test_remove_all_blocks_clears_global_and_group_ignores(tmp_path) -> None:
+    storage = make_storage(tmp_path)
+
+    storage.add_admin_block(target_user_id=10, admin_user_id=1)
+    storage.toggle_group_ignore(chat_id=-100, target_user_id=10, actor_user_id=1)
+    storage.toggle_group_ignore(chat_id=-200, target_user_id=10, actor_user_id=1)
+
+    removed = storage.remove_all_blocks(target_user_id=10)
+
+    assert removed == {"global": 1, "group": 2, "total": 3}
+    assert storage.is_globally_blocked(user_id=10) is False
+    assert storage.is_user_ignored(user_id=10, chat_id=-100) is False
+    assert storage.is_user_ignored(user_id=10, chat_id=-200) is False
+
+
+def test_command_rate_limit_blocks_and_throttles_warning(tmp_path) -> None:
+    storage = make_storage(tmp_path)
+
+    for i in range(10):
+        assert storage.check_and_record_command_rate_limit(
+            user_id=10,
+            command_name="feedback",
+            rate_limit=10,
+            now_ts=100.0 + i,
+            window_seconds=300,
+        ) == (True, False)
+
+    assert storage.check_and_record_command_rate_limit(
+        user_id=10,
+        command_name="feedback",
+        rate_limit=10,
+        now_ts=120.0,
+        window_seconds=300,
+    ) == (False, True)
+    assert storage.check_and_record_command_rate_limit(
+        user_id=10,
+        command_name="feedback",
+        rate_limit=10,
+        now_ts=121.0,
+        window_seconds=300,
+    ) == (False, False)
+
+    assert storage.check_and_record_command_rate_limit(
+        user_id=10,
+        command_name="feedback",
+        rate_limit=10,
+        now_ts=410.0,
+        window_seconds=300,
+    ) == (True, False)
 
 
 def test_model_attempts_persist_in_attempt_order(tmp_path) -> None:

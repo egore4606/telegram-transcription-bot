@@ -2,7 +2,87 @@ import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import bot
+import pytest
+from telegram.ext import ApplicationHandlerStop
 from telegram.error import RetryAfter
+
+
+class GuardStorage:
+    def __init__(
+        self,
+        *,
+        globally_blocked: bool = False,
+        group_ignored: bool = False,
+        command_rate_result: tuple[bool, bool] = (True, False),
+    ) -> None:
+        self.globally_blocked = globally_blocked
+        self.group_ignored = group_ignored
+        self.command_rate_result = command_rate_result
+        self.cleared_pending_feedback: list[tuple[int, int]] = []
+        self.recorded_commands: list[str] = []
+        self.admin_blocks: list[tuple[int, int]] = []
+        self.removed_all: list[int] = []
+        self.remove_all_result = {"global": 0, "group": 0, "total": 0}
+
+    def upsert_user(self, *args) -> None:
+        return None
+
+    def upsert_chat(self, *args) -> None:
+        return None
+
+    def is_globally_blocked(self, user_id: int) -> bool:
+        return self.globally_blocked
+
+    def is_group_ignored(self, chat_id: int, user_id: int) -> bool:
+        return self.group_ignored
+
+    def clear_pending_feedback(self, chat_id: int, user_id: int) -> None:
+        self.cleared_pending_feedback.append((chat_id, user_id))
+
+    def check_and_record_command_rate_limit(self, *args, **kwargs) -> tuple[bool, bool]:
+        self.recorded_commands.append(kwargs["command_name"])
+        return self.command_rate_result
+
+    def add_admin_block(self, target_user_id: int, admin_user_id: int) -> None:
+        self.admin_blocks.append((target_user_id, admin_user_id))
+
+    def remove_all_blocks(self, target_user_id: int) -> dict[str, int]:
+        self.removed_all.append(target_user_id)
+        return self.remove_all_result
+
+    def list_global_blocked_user_ids(self) -> list[int]:
+        return []
+
+    def list_group_ignores(self) -> list[dict[str, object]]:
+        return []
+
+
+def make_guard_update(*, text: str, chat_type: str = "private", user_id: int = 42):
+    user = Mock()
+    user.id = user_id
+    user.full_name = "Test User"
+    user.username = "tester"
+
+    chat = Mock()
+    chat.id = user_id if chat_type == "private" else -100
+    chat.type = chat_type
+    chat.title = "Test Group" if chat_type != "private" else None
+    chat.username = None
+    chat.get_member = AsyncMock()
+
+    message = Mock()
+    message.text = text
+    message.caption = None
+    message.from_user = user
+    message.chat = chat
+    message.reply_text = AsyncMock()
+
+    update = Mock()
+    update.effective_user = user
+    update.effective_chat = chat
+    update.effective_message = message
+    update.message = message
+    return update, message
 
 
 def test_parse_response_sections_standard_response() -> None:
@@ -216,6 +296,104 @@ def test_deliver_processing_reply_retries_after_flood(monkeypatch) -> None:
     assert message.edit_text.await_count == 2
     assert message.reply_text.await_count == 1
     assert sleep_calls == [3]
+
+
+def test_guard_blocks_group_ignored_user_command_in_group(monkeypatch) -> None:
+    storage = GuardStorage(group_ignored=True)
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/feedback spam", chat_type="supergroup")
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(bot.guard_update(update, Mock()))
+
+    assert message.reply_text.await_count == 0
+    assert storage.recorded_commands == []
+
+
+def test_guard_allows_group_ignored_user_in_private_chat(monkeypatch) -> None:
+    storage = GuardStorage(group_ignored=True)
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/help", chat_type="private")
+
+    asyncio.run(bot.guard_update(update, Mock()))
+
+    assert message.reply_text.await_count == 0
+    assert storage.recorded_commands == ["help"]
+
+
+def test_guard_blocks_globally_blocked_user_everywhere(monkeypatch) -> None:
+    storage = GuardStorage(globally_blocked=True)
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/help", chat_type="private")
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(bot.guard_update(update, Mock()))
+
+    assert message.reply_text.await_count == 0
+    assert storage.recorded_commands == []
+
+
+def test_guard_does_not_forward_pending_feedback_from_group_ignored_user(monkeypatch) -> None:
+    storage = GuardStorage(group_ignored=True)
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="this should not become feedback", chat_type="supergroup")
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(bot.guard_update(update, Mock()))
+
+    assert storage.cleared_pending_feedback == [(-100, 42)]
+    assert message.reply_text.await_count == 0
+
+
+def test_guard_rate_limits_ordinary_user_command(monkeypatch) -> None:
+    storage = GuardStorage(command_rate_result=(False, True))
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/feedback spam", chat_type="private")
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(bot.guard_update(update, Mock()))
+
+    assert storage.recorded_commands == ["feedback"]
+    message.reply_text.assert_awaited_once()
+
+
+def test_guard_exempts_admin_from_command_rate_limit(monkeypatch) -> None:
+    storage = GuardStorage(command_rate_result=(False, True))
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, _ = make_guard_update(text="/stats", chat_type="private", user_id=bot.ADMIN_USER_ID)
+
+    asyncio.run(bot.guard_update(update, Mock()))
+
+    assert storage.recorded_commands == []
+
+
+def test_handle_block_rejects_group_usage(monkeypatch) -> None:
+    storage = GuardStorage()
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/block 42", chat_type="supergroup", user_id=bot.ADMIN_USER_ID)
+    context = Mock()
+    context.args = ["42"]
+
+    asyncio.run(bot.handle_block(update, context))
+
+    assert storage.admin_blocks == []
+    message.reply_text.assert_awaited_once()
+    assert "личном чате" in message.reply_text.await_args.args[0]
+
+
+def test_handle_unblock_removes_all_blocks_in_private(monkeypatch) -> None:
+    storage = GuardStorage()
+    storage.remove_all_result = {"global": 1, "group": 2, "total": 3}
+    monkeypatch.setattr(bot, "STORAGE", storage)
+    update, message = make_guard_update(text="/unblock 42", chat_type="private", user_id=bot.ADMIN_USER_ID)
+    context = Mock()
+    context.args = ["42"]
+
+    asyncio.run(bot.handle_unblock(update, context))
+
+    assert storage.removed_all == [42]
+    message.reply_text.assert_awaited_once()
+    assert "Снято групповых игноров" in message.reply_text.await_args.args[0]
 
 
 def test_sync_bot_commands_does_not_raise_on_bot_api_error(caplog) -> None:

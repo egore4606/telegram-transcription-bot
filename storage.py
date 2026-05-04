@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 DEFAULT_MODE = "both"
 DEFAULT_LANGUAGE = "auto"
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 MIGRATION_1_SQL = """
 CREATE TABLE IF NOT EXISTS settings_scopes (
@@ -160,6 +160,23 @@ CREATE INDEX IF NOT EXISTS idx_changelog_broadcasts_user
     ON changelog_broadcasts(user_id, sent_at);
 """
 
+MIGRATION_4_SQL = """
+CREATE TABLE IF NOT EXISTS command_rate_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    command_name TEXT NOT NULL,
+    request_ts REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_rate_limits_user_ts
+    ON command_rate_limits(user_id, request_ts);
+
+CREATE TABLE IF NOT EXISTS command_rate_limit_warnings (
+    user_id INTEGER PRIMARY KEY,
+    warned_until REAL NOT NULL
+);
+"""
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -213,11 +230,15 @@ class Storage:
     def _migration_3_changelog_broadcasts(self, conn: sqlite3.Connection) -> None:
         conn.executescript(MIGRATION_3_SQL)
 
+    def _migration_4_command_rate_limits(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(MIGRATION_4_SQL)
+
     def init_db(self) -> None:
         migrations: dict[int, Callable[[sqlite3.Connection], None]] = {
             1: self._migration_1_initial_schema,
             2: self._migration_2_pending_feedback,
             3: self._migration_3_changelog_broadcasts,
+            4: self._migration_4_command_rate_limits,
         }
 
         with self._connect() as conn:
@@ -347,6 +368,22 @@ class Storage:
             )
             return cur.rowcount > 0
 
+    def remove_all_blocks(self, target_user_id: int) -> dict[str, int]:
+        with self._connect() as conn:
+            global_cur = conn.execute(
+                "DELETE FROM ignored_users WHERE user_id = ? AND source = 'admin_block'",
+                (target_user_id,),
+            )
+            group_cur = conn.execute(
+                "DELETE FROM ignored_users WHERE user_id = ? AND source = 'group_ignore'",
+                (target_user_id,),
+            )
+        return {
+            "global": global_cur.rowcount,
+            "group": group_cur.rowcount,
+            "total": global_cur.rowcount + group_cur.rowcount,
+        }
+
     def toggle_group_ignore(self, chat_id: int, target_user_id: int, actor_user_id: int) -> bool:
         now = utc_now()
         with self._connect() as conn:
@@ -371,6 +408,32 @@ class Storage:
             )
             return True
 
+    def is_globally_blocked(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM ignored_users
+                WHERE user_id = ? AND source = 'admin_block'
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        return row is not None
+
+    def is_group_ignored(self, chat_id: int, user_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM ignored_users
+                WHERE user_id = ? AND source = 'group_ignore' AND chat_id = ?
+                LIMIT 1
+                """,
+                (user_id, chat_id),
+            ).fetchone()
+        return row is not None
+
     def is_user_ignored(self, user_id: int, chat_id: int) -> bool:
         with self._connect() as conn:
             row = conn.execute(
@@ -386,11 +449,41 @@ class Storage:
         return row is not None
 
     def list_blocked_user_ids(self) -> list[int]:
+        return self.list_global_blocked_user_ids()
+
+    def list_global_blocked_user_ids(self) -> list[int]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT user_id FROM ignored_users ORDER BY user_id"
+                """
+                SELECT DISTINCT user_id
+                FROM ignored_users
+                WHERE source = 'admin_block'
+                ORDER BY user_id
+                """
             ).fetchall()
         return [row["user_id"] for row in rows]
+
+    def list_group_ignores(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    i.user_id,
+                    i.chat_id,
+                    i.created_at,
+                    u.full_name,
+                    u.username,
+                    c.title,
+                    c.username AS chat_username,
+                    c.chat_type
+                FROM ignored_users i
+                LEFT JOIN users u ON u.user_id = i.user_id
+                LEFT JOIN chats c ON c.chat_id = i.chat_id
+                WHERE i.source = 'group_ignore'
+                ORDER BY i.created_at DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def prune_rate_limits(self, user_id: int, now_ts: float, window_seconds: int = 60) -> None:
         threshold = now_ts - window_seconds
@@ -424,6 +517,64 @@ class Storage:
                 (user_id, now_ts),
             )
             return True
+
+    def check_and_record_command_rate_limit(
+        self,
+        user_id: int,
+        command_name: str,
+        rate_limit: int,
+        now_ts: float,
+        window_seconds: int,
+    ) -> tuple[bool, bool]:
+        threshold = now_ts - window_seconds
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM command_rate_limits WHERE request_ts < ?",
+                (threshold,),
+            )
+            conn.execute(
+                "DELETE FROM command_rate_limit_warnings WHERE warned_until < ?",
+                (now_ts,),
+            )
+            current = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM command_rate_limits
+                WHERE user_id = ? AND request_ts >= ?
+                """,
+                (user_id, threshold),
+            ).fetchone()
+            if current["count"] >= rate_limit:
+                warning = conn.execute(
+                    """
+                    SELECT warned_until
+                    FROM command_rate_limit_warnings
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                ).fetchone()
+                if warning is not None and warning["warned_until"] > now_ts:
+                    return False, False
+
+                conn.execute(
+                    """
+                    INSERT INTO command_rate_limit_warnings (user_id, warned_until)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        warned_until = excluded.warned_until
+                    """,
+                    (user_id, now_ts + window_seconds),
+                )
+                return False, True
+
+            conn.execute(
+                """
+                INSERT INTO command_rate_limits (user_id, command_name, request_ts)
+                VALUES (?, ?, ?)
+                """,
+                (user_id, command_name, now_ts),
+            )
+            return True, False
 
     def increment_stats(self, user_id: int, media_type: str) -> None:
         now = utc_now()
@@ -488,8 +639,20 @@ class Storage:
                 """
             ).fetchall()
             blocked_rows = conn.execute(
-                "SELECT DISTINCT user_id FROM ignored_users ORDER BY user_id"
+                """
+                SELECT DISTINCT user_id
+                FROM ignored_users
+                WHERE source = 'admin_block'
+                ORDER BY user_id
+                """
             ).fetchall()
+            group_ignored_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM ignored_users
+                WHERE source = 'group_ignore'
+                """
+            ).fetchone()
 
         return {
             "today": today_row["total_count"] if today_row else 0,
@@ -505,6 +668,8 @@ class Storage:
                 for row in top_rows
             ],
             "blocked_users": [row["user_id"] for row in blocked_rows],
+            "global_blocked_users": [row["user_id"] for row in blocked_rows],
+            "group_ignored_count": group_ignored_row["count"] if group_ignored_row else 0,
         }
 
     def get_dashboard_snapshot(self) -> dict[str, Any]:

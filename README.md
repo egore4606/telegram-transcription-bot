@@ -19,6 +19,7 @@ Works in private chats and groups. Settings are scoped separately for personal c
 - Syncs the Telegram **command menu automatically on startup**
 - Supports an explicit **admin-only changelog broadcast** command with deduplication per changelog version
 - Adds **admin inspection commands** for recent processing history and recent model errors
+- Supports group-only ignores, global admin blocks, and command anti-spam limits
 - Includes a small **read-only admin panel** for stats, history, errors, and processing details
 - Archives processed voice/video requests and Gemini model attempts in SQLite
 - Saves daily Docker logs to `./logs/` with an **incremental backup script**
@@ -41,7 +42,7 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | `/changelog` | Show the current public changelog |
 | `/feedback` | Bot forwards your next text message from the same chat as feedback for 15 minutes |
 | `/feedback [text]` | Send feedback immediately in one command |
-| `/ignore` | In groups, reply to a user message to toggle ignore *(group admins only)* |
+| `/ignore` | In groups, reply to a user message to toggle ignore for that group *(group admins only)* |
 
 ### Admin Commands
 
@@ -50,8 +51,8 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | `/stats` | Bot stats and runtime info |
 | `/history [N]` | Show recent processing rows from SQLite |
 | `/last_errors [N]` | Show recent failed model attempts |
-| `/block [user_id]` | Block a user globally |
-| `/unblock [user_id]` | Remove a global block |
+| `/block [user_id]` | In admin private chat, block a user globally |
+| `/unblock [user_id]` | In admin private chat, remove global block and all group ignores for a user |
 | `/broadcast_changelog` | Send the current changelog to known private-chat users |
 
 The bot publishes these commands to Telegram Bot API automatically on startup:
@@ -101,6 +102,8 @@ MODEL_REQUEST_TIMEOUT=45
 DATABASE_PATH=/data/bot.sqlite3
 ADMIN_USER_ID=123456789
 RATE_LIMIT=5
+COMMAND_RATE_LIMIT=10
+COMMAND_RATE_LIMIT_WINDOW_SECONDS=300
 ```
 
 Or use the pre-built image:
@@ -115,6 +118,12 @@ Add the bot to your group. For it to receive all messages, either:
 
 - make it an admin in the group, or
 - disable Privacy Mode in @BotFather and re-add the bot.
+
+`/ignore` is group-local: reply to a user's message with `/ignore` to stop that user from using bot commands, feedback, voice, and video processing in that group only.
+
+`/block` and `/unblock` are admin-only private-chat commands. `/block` disables the user everywhere. `/unblock` removes both the global block and all group-local ignores for that user.
+
+Ordinary users are limited to `10` commands per `5` minutes by default. Admin commands and valid group-admin `/ignore` actions are exempt.
 
 ## Logs
 
@@ -167,6 +176,7 @@ Current migration layout:
 - version `1`: initial persistent bot schema
 - version `2`: pending feedback state
 - version `3`: changelog broadcast delivery tracking
+- version `4`: command rate limiting and warning throttling
 
 When adding a new schema change:
 

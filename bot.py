@@ -11,7 +11,7 @@ from google.genai import types
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, ContextTypes, MessageHandler, filters
 
 from storage import Storage, utc_now
 
@@ -42,6 +42,8 @@ RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per u
 MODEL_OVERLOAD_RETRY_DELAY = 5
 MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "45"))
 PENDING_FEEDBACK_TTL_SECONDS = int(os.environ.get("PENDING_FEEDBACK_TTL_SECONDS", "900"))
+COMMAND_RATE_LIMIT = int(os.environ.get("COMMAND_RATE_LIMIT", "10"))
+COMMAND_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("COMMAND_RATE_LIMIT_WINDOW_SECONDS", "300"))
 ADMIN_HISTORY_DEFAULT_LIMIT = 10
 ADMIN_HISTORY_MAX_LIMIT = 20
 ADMIN_PANEL_REPLY_LIMIT = 3500
@@ -58,16 +60,15 @@ if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
 
 STORAGE = Storage(DATABASE_PATH)
-PUBLIC_CHANGELOG_VERSION = "2026-04-21"
+PUBLIC_CHANGELOG_VERSION = "2026-05-04"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
 Вот что стало лучше:
-- если Gemini временно перегружен, бот теперь обычно не падает с ошибкой, а сам ждёт, пробует снова и при необходимости переключается на резервные модели;
-- режим ответа и язык теперь можно настраивать отдельно в личке и в каждой группе;
-- настройки, статистика и история обработанных голосовых и кружочков теперь не пропадают после перезапуска бота;
-- появилась команда <code>/feedback</code> — можно быстро отправить пожелание или сообщить о проблеме;
-- появилась команда <code>/changelog</code> — можно в любой момент посмотреть последние изменения.
+- исправлена команда <code>/ignore</code> в группах: теперь игнорируемый человек не сможет спамить команды и feedback в этой группе;
+- глобальная блокировка через админскую команду <code>/block</code> теперь блокирует пользователя везде, а <code>/unblock</code> снимает и глобальную блокировку, и групповые игноры;
+- добавлена защита от спама командами: если слишком часто тыкать команды, бот попросит подождать;
+- таймер обработки стал устойчивее к ограничениям Telegram на частое редактирование сообщений.
 
 Если заметишь что-то странное в работе бота, отправь <code>/feedback твой текст</code>."""
 
@@ -89,8 +90,8 @@ ADMIN_COMMANDS = [
     BotCommand("stats", "Показать статистику бота"),
     BotCommand("history", "Показать последние обработки"),
     BotCommand("last_errors", "Показать последние ошибки моделей"),
-    BotCommand("block", "Заблокировать пользователя по user_id"),
-    BotCommand("unblock", "Разблокировать пользователя по user_id"),
+    BotCommand("block", "Глобально заблокировать пользователя"),
+    BotCommand("unblock", "Снять глобальный блок и групповые игноры"),
     BotCommand("broadcast_changelog", "Разослать текущий changelog в лички"),
 ]
 
@@ -356,6 +357,107 @@ def remember_context(update: Update) -> None:
         )
 
 
+def extract_command_name(message) -> str | None:
+    text = message.text or message.caption or ""
+    if not text.startswith("/"):
+        return None
+    command = text.split(maxsplit=1)[0][1:]
+    if not command:
+        return None
+    return command.split("@", maxsplit=1)[0].lower()
+
+
+def is_private_chat(message) -> bool:
+    return message.chat.type == "private"
+
+
+def is_group_chat(message) -> bool:
+    return message.chat.type in ("group", "supergroup")
+
+
+async def is_group_admin_for_message(message) -> bool:
+    if not is_group_chat(message):
+        return False
+    member = await message.chat.get_member(message.from_user.id)
+    return member.status in ("administrator", "creator")
+
+
+async def should_skip_command_rate_limit(message, command_name: str) -> bool:
+    if is_admin(message.from_user.id):
+        return True
+    if command_name == "ignore" and is_group_chat(message):
+        try:
+            return await is_group_admin_for_message(message)
+        except Exception as error:
+            logger.warning(
+                "COMMAND RATE ADMIN CHECK FAILED | chat=%d | user=%d | error=%s",
+                message.chat.id,
+                message.from_user.id,
+                error,
+            )
+    return False
+
+
+async def guard_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if message is None or user is None or chat is None:
+        return
+
+    remember_context(update)
+    command_name = extract_command_name(message)
+    is_text_feedback_candidate = message.text is not None and command_name is None
+    should_guard = command_name is not None or is_text_feedback_candidate
+    if not should_guard or is_admin(user.id):
+        return
+
+    if STORAGE.is_globally_blocked(user.id):
+        if is_text_feedback_candidate:
+            STORAGE.clear_pending_feedback(chat.id, user.id)
+        logger.info(
+            "BLOCKED UPDATE IGNORED | user=%d | chat=%d | command=%s | scope=global",
+            user.id,
+            chat.id,
+            command_name or "text",
+        )
+        raise ApplicationHandlerStop
+
+    if is_group_chat(message) and STORAGE.is_group_ignored(chat.id, user.id):
+        if is_text_feedback_candidate:
+            STORAGE.clear_pending_feedback(chat.id, user.id)
+        logger.info(
+            "BLOCKED UPDATE IGNORED | user=%d | chat=%d | command=%s | scope=group",
+            user.id,
+            chat.id,
+            command_name or "text",
+        )
+        raise ApplicationHandlerStop
+
+    if command_name is None or await should_skip_command_rate_limit(message, command_name):
+        return
+
+    allowed, should_warn = STORAGE.check_and_record_command_rate_limit(
+        user_id=user.id,
+        command_name=command_name,
+        rate_limit=COMMAND_RATE_LIMIT,
+        now_ts=time.time(),
+        window_seconds=COMMAND_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if allowed:
+        return
+
+    logger.info(
+        "COMMAND RATE LIMITED | user=%d | chat=%d | command=%s",
+        user.id,
+        chat.id,
+        command_name,
+    )
+    if should_warn:
+        await message.reply_text("⏳ Слишком много команд. Подожди несколько минут.")
+    raise ApplicationHandlerStop
+
+
 def parse_response_sections(raw: str, mode: str) -> tuple[str, str]:
     raw = raw.strip()
 
@@ -431,8 +533,8 @@ def build_help_text(user_id: int) -> str:
             "/stats — статистика и состояние бота\n"
             "/history <code>[N]</code> — последние обработки из БД\n"
             "/last_errors <code>[N]</code> — последние ошибки моделей\n"
-            "/block <code>user_id</code> — заблокировать пользователя\n"
-            "/unblock <code>user_id</code> — разблокировать пользователя\n"
+            "/block <code>user_id</code> — глобально заблокировать пользователя (только в личке)\n"
+            "/unblock <code>user_id</code> — снять глобальный блок и все групповые игноры (только в личке)\n"
             "/broadcast_changelog — разослать текущий changelog в личные чаты"
         )
 
@@ -980,8 +1082,9 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     ) or "  нет данных"
 
     blocked_text = "\n".join(
-        f"  <code>{uid}</code>" for uid in snapshot["blocked_users"]
+        f"  <code>{uid}</code>" for uid in snapshot["global_blocked_users"]
     ) or "  нет"
+    group_ignored_count = snapshot["group_ignored_count"]
 
     await update.message.reply_text(
         f"🤖 <b>Статус и статистика</b>\n\n"
@@ -994,7 +1097,8 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"  Голосовых всего: <b>{snapshot['voice_total']}</b>\n"
         f"  Кружочков всего: <b>{snapshot['video_total']}</b>\n\n"
         f"<b>Топ пользователей:</b>\n{top_text}\n\n"
-        f"<b>Заблокированы:</b>\n{blocked_text}",
+        f"<b>Глобально заблокированы:</b>\n{blocked_text}\n"
+        f"<b>Групповых игноров:</b> <code>{group_ignored_count}</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -1124,6 +1228,10 @@ async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
 
+    if not is_private_chat(update.message):
+        await update.message.reply_text("⚠️ /block работает только в личном чате с ботом.")
+        return
+
     if not context.args:
         await update.message.reply_text(
             "Использование: /block <code>user_id</code>\n"
@@ -1156,13 +1264,23 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
 
+    if not is_private_chat(update.message):
+        await update.message.reply_text("⚠️ /unblock работает только в личном чате с ботом.")
+        return
+
     if not context.args:
         blocked = "\n".join(
-            f"  <code>{uid}</code>" for uid in STORAGE.list_blocked_user_ids()
+            f"  <code>{uid}</code>" for uid in STORAGE.list_global_blocked_user_ids()
+        ) or "  никого нет"
+        group_ignored = STORAGE.list_group_ignores()
+        group_ignored_text = "\n".join(
+            f"  <code>{entry['user_id']}</code> в чате <code>{entry['chat_id']}</code>"
+            for entry in group_ignored[:20]
         ) or "  никого нет"
         await update.message.reply_text(
             f"Использование: /unblock <code>user_id</code>\n\n"
-            f"<b>Сейчас заблокированы:</b>\n{blocked}",
+            f"<b>Глобально заблокированы:</b>\n{blocked}\n\n"
+            f"<b>Групповые игноры:</b>\n{group_ignored_text}",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1173,15 +1291,24 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ Неверный ID. Должно быть число.")
         return
 
-    if STORAGE.remove_admin_block(target_id):
-        logger.info("ADMIN UNBLOCK | admin=%d unblocked user=%d", update.effective_user.id, target_id)
+    removed = STORAGE.remove_all_blocks(target_id)
+    if removed["total"]:
+        logger.info(
+            "ADMIN UNBLOCK | admin=%d unblocked user=%d | global=%d | group=%d",
+            update.effective_user.id,
+            target_id,
+            removed["global"],
+            removed["group"],
+        )
         await update.message.reply_text(
-            f"✅ Пользователь <code>{target_id}</code> разблокирован.",
+            f"✅ Пользователь <code>{target_id}</code> разблокирован.\n"
+            f"Снято глобальных блокировок: <code>{removed['global']}</code>\n"
+            f"Снято групповых игноров: <code>{removed['group']}</code>",
             parse_mode=ParseMode.HTML,
         )
     else:
         await update.message.reply_text(
-            f"ℹ️ Пользователь <code>{target_id}</code> не был заблокирован.",
+            f"ℹ️ У пользователя <code>{target_id}</code> не было блокировок или групповых игноров.",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1485,6 +1612,7 @@ def main() -> None:
     STORAGE.init_db()
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
+    app.add_handler(MessageHandler(filters.ALL, guard_update), group=-1)
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("changelog", handle_changelog))
