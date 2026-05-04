@@ -174,12 +174,22 @@ def test_group_ignore_only_matches_that_group(tmp_path) -> None:
 def test_global_block_matches_private_and_every_group(tmp_path) -> None:
     storage = make_storage(tmp_path)
 
+    storage.upsert_user(10, "Blocked User", "blocked")
     storage.add_admin_block(target_user_id=10, admin_user_id=1)
 
     assert storage.is_globally_blocked(user_id=10) is True
     assert storage.is_user_ignored(user_id=10, chat_id=10) is True
     assert storage.is_user_ignored(user_id=10, chat_id=-100) is True
     assert storage.list_global_blocked_user_ids() == [10]
+    global_blocks = storage.list_global_blocks()
+    assert global_blocks == [
+        {
+            "user_id": 10,
+            "created_at": global_blocks[0]["created_at"],
+            "full_name": "Blocked User",
+            "username": "blocked",
+        }
+    ]
 
 
 def test_remove_all_blocks_clears_global_and_group_ignores(tmp_path) -> None:

@@ -463,6 +463,23 @@ class Storage:
             ).fetchall()
         return [row["user_id"] for row in rows]
 
+    def list_global_blocks(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    i.user_id,
+                    i.created_at,
+                    u.full_name,
+                    u.username
+                FROM ignored_users i
+                LEFT JOIN users u ON u.user_id = i.user_id
+                WHERE i.source = 'admin_block'
+                ORDER BY i.created_at DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_group_ignores(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

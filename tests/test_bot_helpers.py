@@ -53,6 +53,9 @@ class GuardStorage:
     def list_global_blocked_user_ids(self) -> list[int]:
         return []
 
+    def list_global_blocks(self) -> list[dict[str, object]]:
+        return []
+
     def list_group_ignores(self) -> list[dict[str, object]]:
         return []
 

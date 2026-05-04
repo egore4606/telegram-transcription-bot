@@ -267,6 +267,14 @@ def format_chat_label(chat_id: int | None, chat_type: str | None, title: str | N
     return f"{html.escape(label)} (<code>{chat_id}</code>)"
 
 
+def format_blocked_user_label(entry: dict[str, object]) -> str:
+    return format_user_label(
+        int(entry["user_id"]),
+        entry.get("full_name"),
+        entry.get("username"),
+    )
+
+
 def format_processing_status(status: str) -> str:
     labels = {
         "success": "✅ success",
@@ -1269,12 +1277,13 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if not context.args:
+        global_blocks = STORAGE.list_global_blocks()
         blocked = "\n".join(
-            f"  <code>{uid}</code>" for uid in STORAGE.list_global_blocked_user_ids()
+            f"  {format_blocked_user_label(entry)}" for entry in global_blocks
         ) or "  никого нет"
         group_ignored = STORAGE.list_group_ignores()
         group_ignored_text = "\n".join(
-            f"  <code>{entry['user_id']}</code> в чате <code>{entry['chat_id']}</code>"
+            f"  {format_blocked_user_label(entry)} в {format_chat_label(entry['chat_id'], entry.get('chat_type'), entry.get('title'), entry.get('chat_username'))}"
             for entry in group_ignored[:20]
         ) or "  никого нет"
         await update.message.reply_text(
@@ -1449,7 +1458,7 @@ async def handle_media(
         )
         return
 
-    if not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
+    if not is_admin(user_id) and not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
         rate_limit_text = "⏳ Слишком много запросов. Подожди минуту."
         STORAGE.create_message_processing(
             telegram_message_id=message.message_id,
