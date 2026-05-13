@@ -266,7 +266,7 @@ def test_model_attempts_persist_in_attempt_order(tmp_path) -> None:
     storage.add_model_attempt(
         message_processing_id=message_processing_id,
         attempt_no=1,
-        model_name="gemini-3.1-flash-lite-preview",
+        model_name="gemini-3.1-flash-lite",
         api_key_slot="primary",
         status="error",
         started_at="2026-04-21T00:00:00+00:00",
@@ -286,7 +286,7 @@ def test_model_attempts_persist_in_attempt_order(tmp_path) -> None:
     assert storage.list_model_attempts(message_processing_id) == [
         {
             "attempt_no": 1,
-            "model_name": "gemini-3.1-flash-lite-preview",
+            "model_name": "gemini-3.1-flash-lite",
             "api_key_slot": "primary",
             "status": "error",
             "error_text": "503 unavailable",
@@ -346,7 +346,7 @@ def test_recent_processing_and_detail_queries(tmp_path) -> None:
         first_id,
         processing_ms=4200,
         model_used="gemini-2.5-flash",
-        models_tried="gemini-3.1-flash-lite-preview -> gemini-2.5-flash",
+        models_tried="gemini-3.1-flash-lite -> gemini-2.5-flash",
         error_code="model_overloaded",
         error_text="503 unavailable",
         final_reply_text="temporary failure",
@@ -368,7 +368,7 @@ def test_recent_processing_and_detail_queries(tmp_path) -> None:
     storage.update_message_processing(
         second_id,
         processing_ms=8100,
-        model_used="gemini-3.1-flash-lite-preview",
+        model_used="gemini-3.1-flash-lite",
         raw_model_response="full response",
         transcription_text="transcription",
         summary_text="summary",
@@ -409,7 +409,7 @@ def test_recent_failed_attempts_and_processing_attempts_queries(tmp_path) -> Non
     storage.add_model_attempt(
         message_processing_id=processing_id,
         attempt_no=1,
-        model_name="gemini-3.1-flash-lite-preview",
+        model_name="gemini-3.1-flash-lite",
         api_key_slot="primary",
         status="error",
         started_at="2026-04-21T00:00:00+00:00",
@@ -437,7 +437,7 @@ def test_recent_failed_attempts_and_processing_attempts_queries(tmp_path) -> Non
             "attempt_id": attempts[0]["attempt_id"],
             "message_processing_id": processing_id,
             "attempt_no": 1,
-            "model_name": "gemini-3.1-flash-lite-preview",
+            "model_name": "gemini-3.1-flash-lite",
             "api_key_slot": "primary",
             "attempt_status": "error",
             "attempt_error_text": "503 unavailable",
@@ -482,7 +482,7 @@ def test_dashboard_snapshot_includes_processing_counters(tmp_path) -> None:
     storage.add_model_attempt(
         message_processing_id=processing_id,
         attempt_no=1,
-        model_name="gemini-3.1-flash-lite-preview",
+        model_name="gemini-3.1-flash-lite",
         api_key_slot="primary",
         status="error",
         started_at="2026-04-21T00:00:00+00:00",

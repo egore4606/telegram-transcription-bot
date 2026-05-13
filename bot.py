@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 GEMINI_FALLBACK_MODELS = [
     "gemini-3-flash-preview",
     "gemini-2.5-flash",
@@ -109,7 +109,13 @@ def build_prompt(media_type: str, language: str, mode: str) -> str:
     if language == "auto":
         lang_instruction = "Сохраняй язык оригинала."
     else:
-        lang_instruction = f"Переведи ответ на язык: {language}."
+        lang_instruction = (
+            f"Строго примени эту пользовательскую инструкцию к языку и стилю ВСЕГО ответа: {language}. "
+            "Если инструкция содержит язык, включая сокращения вроде en, ru, uk, de, переведи на этот язык "
+            "абсолютно все части ответа, включая транскрипцию, краткое содержание и TL;DR. "
+            "Если инструкция содержит стиль, тон или манеру речи, сохрани смысл и примени этот стиль ко всему ответу. "
+            "Не оставляй транскрипцию на языке оригинала, если пользователь указал другой язык."
+        )
 
     if mode == "tldr":
         return f"""{task} {lang_instruction}
@@ -1181,7 +1187,7 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    language = context.args[0].lower()
+    language = " ".join(context.args).strip().lower()
     STORAGE.set_language(scope_type, scope_id, language)
     label = "язык оригинала" if language == "auto" else language
     await update.message.reply_text(

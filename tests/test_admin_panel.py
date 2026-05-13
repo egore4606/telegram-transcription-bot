@@ -34,14 +34,14 @@ def seed_processing_rows(storage: Storage) -> int:
         summary_text="SUMMARY",
         final_reply_text="FINAL REPLY",
         model_used="gemini-2.5-flash",
-        models_tried="gemini-3.1-flash-lite-preview -> gemini-2.5-flash",
+        models_tried="gemini-3.1-flash-lite -> gemini-2.5-flash",
         error_code="model_overloaded",
         error_text="503 unavailable",
     )
     storage.add_model_attempt(
         message_processing_id=processing_id,
         attempt_no=1,
-        model_name="gemini-3.1-flash-lite-preview",
+        model_name="gemini-3.1-flash-lite",
         api_key_slot="primary",
         status="error",
         started_at="2026-04-21T00:00:00+00:00",
@@ -106,7 +106,7 @@ def test_errors_route_renders_failed_attempts(tmp_path) -> None:
     body = response.get_data(as_text=True)
     assert "Recent Failed Model Attempts" in body
     assert f"/processing/{processing_id}" in body
-    assert "gemini-3.1-flash-lite-preview" in body
+    assert "gemini-3.1-flash-lite" in body
 
 
 def test_processing_detail_route_and_404(tmp_path) -> None:

@@ -175,7 +175,9 @@ def test_build_prompt_differs_for_auto_and_fixed_language() -> None:
     fixed_prompt = bot.build_prompt("voice", "de", "both")
 
     assert "Сохраняй язык оригинала." in auto_prompt
-    assert "Переведи ответ на язык: de." in fixed_prompt
+    assert "Строго примени" in fixed_prompt
+    assert "de" in fixed_prompt
+    assert "включая транскрипцию" in fixed_prompt
 
 
 def test_build_prompt_differs_for_tldr_and_regular_modes() -> None:

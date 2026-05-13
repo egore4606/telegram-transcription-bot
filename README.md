@@ -97,7 +97,7 @@ docker compose up -d --build
 TELEGRAM_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_primary_gemini_key
 GEMINI_API_KEY_2=your_backup_gemini_key
-GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_MODEL=gemini-3.1-flash-lite
 MODEL_REQUEST_TIMEOUT=45
 DATABASE_PATH=/data/bot.sqlite3
 ADMIN_USER_ID=123456789
