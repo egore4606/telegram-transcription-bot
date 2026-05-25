@@ -12,7 +12,12 @@ Works in private chats and groups. Settings are scoped separately for personal c
 - Stores **separate settings for private chats and groups**
 - Supports **per-scope language setting**: `auto`, `ru`, `en`, `de`, ...
 - Uses a **fallback API key** when the primary Gemini key hits quota
-- Uses a **fallback model chain** when the current model is overloaded
+- Uses a **fallback model chain**: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`
+- Requests structured Gemini JSON output with separate `transcription` and `summary` fields
+- Processes media in background jobs with per-user and per-chat concurrency limits
+- Queues overflow jobs automatically and shows queue position
+- Adds inline **Stop** and **Next model** controls under processing messages
+- Splits long Telegram replies into safe chunks so long voice messages do not fail on message-size limits
 - Shows a live **processing timer** while a voice/video is being handled
 - Persists settings, stats, pending feedback, processed media history, and changelog delivery state in **SQLite**
 - Lets users send **feedback** directly to the admin
@@ -38,6 +43,8 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | `/summary_only` | Only summary |
 | `/tldr` | One sentence with the main point |
 | `/language [code]` | Set response language: `auto`, `ru`, `en`, `de`, ... |
+| `/stop` | Cancel your latest active or queued processing job in this chat |
+| `/next` | Force your latest active processing job in this chat to switch to the next Gemini model |
 | `/myid` | Show your Telegram user ID |
 | `/changelog` | Show the current public changelog |
 | `/feedback` | Bot forwards your next text message from the same chat as feedback for 15 minutes |
@@ -73,7 +80,7 @@ When someone sends a voice message or a circle, the bot replies with:
 > 📌 **Summary:**
 > *(1–3 sentences; for video notes also describes what is shown)*
 
-While the message is being processed, the bot updates a live timer in place.
+While the message is being processed, the bot updates a live timer in place and shows **Stop** / **Next model** buttons. If all active slots are busy, the bot immediately replies with the queue position and starts the job automatically later.
 
 ## Requirements
 
@@ -97,8 +104,10 @@ docker compose up -d --build
 TELEGRAM_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_primary_gemini_key
 GEMINI_API_KEY_2=your_backup_gemini_key
-GEMINI_MODEL=gemini-3.1-flash-lite
-MODEL_REQUEST_TIMEOUT=45
+GEMINI_MODEL=gemini-3.5-flash
+MODEL_REQUEST_TIMEOUT=40
+MAX_ACTIVE_JOBS_PER_USER=3
+MAX_ACTIVE_JOBS_PER_CHAT=5
 DATABASE_PATH=/data/bot.sqlite3
 ADMIN_USER_ID=123456789
 RATE_LIMIT=5
@@ -161,6 +170,8 @@ Stored in the database:
 - changelog delivery records
 
 Only media the bot actually processes is archived. Regular text chat messages are not copied into the database, except operational state needed for the bot itself, such as feedback flow and private/group context tracking.
+
+Queued jobs are kept in memory only. If the container restarts, the queue itself is not restored, but permanent processing history remains in SQLite.
 
 ## Database Migrations
 

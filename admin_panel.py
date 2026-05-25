@@ -13,7 +13,7 @@ ADMIN_PANEL_HOST = os.environ.get("ADMIN_PANEL_HOST", "0.0.0.0")
 ADMIN_PANEL_PORT = int(os.environ.get("ADMIN_PANEL_PORT", "8081"))
 PANEL_DEFAULT_LIMIT = 50
 PANEL_MAX_LIMIT = 200
-KNOWN_PROCESSING_STATUSES = ("started", "success", "failed", "ignored", "rate_limited")
+KNOWN_PROCESSING_STATUSES = ("queued", "started", "success", "failed", "ignored", "rate_limited", "cancelled")
 
 
 def clamp_limit(raw_value: str | None, default: int = PANEL_DEFAULT_LIMIT) -> int:
@@ -83,7 +83,9 @@ def format_status_label(status: str | None) -> str:
         "failed": "failed",
         "ignored": "ignored",
         "rate_limited": "rate_limited",
+        "queued": "queued",
         "started": "started",
+        "cancelled": "cancelled",
     }
     if status is None:
         return "-"
@@ -96,7 +98,9 @@ def status_badge_class(status: str | None) -> str:
         "failed": "failed",
         "ignored": "ignored",
         "rate_limited": "warning",
+        "queued": "warning",
         "started": "info",
+        "cancelled": "warning",
     }
     return classes.get(status, "info")
 

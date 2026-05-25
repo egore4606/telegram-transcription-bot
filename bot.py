@@ -1,17 +1,20 @@
 import asyncio
 import html
+import json
 import logging
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from google import genai
 from google.genai import types
-from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
+from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter
-from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from storage import Storage, utc_now
 
@@ -30,8 +33,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_FALLBACK_MODELS = [
+    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -40,14 +44,18 @@ DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/bot.sqlite3")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
-MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "45"))
+MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "40"))
 PENDING_FEEDBACK_TTL_SECONDS = int(os.environ.get("PENDING_FEEDBACK_TTL_SECONDS", "900"))
 COMMAND_RATE_LIMIT = int(os.environ.get("COMMAND_RATE_LIMIT", "10"))
 COMMAND_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("COMMAND_RATE_LIMIT_WINDOW_SECONDS", "300"))
+MAX_ACTIVE_JOBS_PER_USER = int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "3"))
+MAX_ACTIVE_JOBS_PER_CHAT = int(os.environ.get("MAX_ACTIVE_JOBS_PER_CHAT", "5"))
+TELEGRAM_SAFE_MESSAGE_LIMIT = 3800
+TELEGRAM_SECTION_TEXT_LIMIT = 3000
 ADMIN_HISTORY_DEFAULT_LIMIT = 10
 ADMIN_HISTORY_MAX_LIMIT = 20
 ADMIN_PANEL_REPLY_LIMIT = 3500
-KNOWN_PROCESSING_STATUSES = {"started", "success", "failed", "ignored", "rate_limited"}
+KNOWN_PROCESSING_STATUSES = {"queued", "started", "success", "failed", "ignored", "rate_limited", "cancelled"}
 
 GEMINI_MODEL_CHAIN: list[str] = []
 for model_name in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
@@ -59,16 +67,18 @@ gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
 if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
 
+GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
 STORAGE = Storage(DATABASE_PATH)
-PUBLIC_CHANGELOG_VERSION = "2026-05-04"
+PUBLIC_CHANGELOG_VERSION = "2026-05-25"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
 Вот что стало лучше:
-- исправлена команда <code>/ignore</code> в группах: теперь игнорируемый человек не сможет спамить команды и feedback в этой группе;
-- глобальная блокировка через админскую команду <code>/block</code> теперь блокирует пользователя везде, а <code>/unblock</code> снимает и глобальную блокировку, и групповые игноры;
-- добавлена защита от спама командами: если слишком часто тыкать команды, бот попросит подождать;
-- таймер обработки стал устойчивее к ограничениям Telegram на частое редактирование сообщений.
+- новая цепочка Gemini начинается с <code>gemini-3.5-flash</code>;
+- голосовые и кружочки теперь обрабатываются в фоне: несколько сообщений могут идти параллельно, лишние встают в очередь;
+- под сообщением обработки появились кнопки <b>Stop</b> и <b>Next model</b>, также работают команды <code>/stop</code> и <code>/next</code>;
+- длинные ответы больше не ломаются из-за лимита Telegram: бот аккуратно делит результат на несколько сообщений;
+- Gemini теперь отдаёт структурированный JSON, поэтому транскрипция и summary разбираются надёжнее.
 
 Если заметишь что-то странное в работе бота, отправь <code>/feedback твой текст</code>."""
 
@@ -80,6 +90,8 @@ USER_COMMANDS = [
     BotCommand("summary_only", "Только краткое содержание"),
     BotCommand("tldr", "Одно предложение с самой сутью"),
     BotCommand("language", "Настроить язык ответа"),
+    BotCommand("stop", "Остановить последнюю обработку"),
+    BotCommand("next", "Переключить последнюю обработку на следующую модель"),
     BotCommand("myid", "Показать ваш Telegram ID"),
     BotCommand("feedback", "Отправить feedback администратору"),
     BotCommand("changelog", "Показать последние изменения"),
@@ -98,13 +110,17 @@ ADMIN_COMMANDS = [
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 
-def build_prompt(media_type: str, language: str, mode: str) -> str:
+def build_prompt(media_type: str, language: str, mode: str, duration_seconds: int | None = None) -> str:
     if media_type == "voice":
         task = "Это голосовое сообщение из Telegram."
-        summary_note = "опиши суть сказанного"
+        media_instruction = "Визуального контекста нет."
     else:
         task = "Это видео-кружочек (video note) из Telegram."
-        summary_note = "опиши суть сказанного И то, что происходит на видео (что видно, что показывают)"
+        media_instruction = (
+            "Учитывай визуальный контекст только когда он помогает понять смысл сообщения. "
+            "Если важно, кратко опиши, что происходит на видео. "
+            "Не добавляй generic-описания вроде «молодой человек рассказывает», если они не несут пользы."
+        )
 
     if language == "auto":
         lang_instruction = "Сохраняй язык оригинала."
@@ -117,28 +133,54 @@ def build_prompt(media_type: str, language: str, mode: str) -> str:
             "Не оставляй транскрипцию на языке оригинала, если пользователь указал другой язык."
         )
 
+    duration_note = ""
+    if duration_seconds is not None:
+        duration_note = f"\nДлина медиа: примерно {duration_seconds} секунд."
+
+    common_rules = f"""{task} {lang_instruction}
+{media_instruction}{duration_note}
+
+Верни только валидный JSON-объект без markdown и без пояснений.
+Схема JSON:
+{{"transcription": "...", "summary": "..."}}
+
+Транскрипция:
+- сделай чистый, readable текст;
+- убери бесполезные filler-слова, междометия, звуки hesitation и повторы, если они не меняют смысл;
+- сохрани смысл, факты, имена, числа и порядок мыслей;
+- не выдумывай слова, которых нет в медиа.
+
+Краткое содержание:
+- масштабируй длину по объёму сообщения: короткое сообщение — 1 предложение, среднее — 2-3 предложения, длинное — до 4-6 предложений;
+- передавай только важный смысл;
+- для video note добавляй визуальный контекст только если он реально уточняет сказанное.
+"""
+
     if mode == "tldr":
-        return f"""{task} {lang_instruction}
+        return f"""{common_rules}
 
-Напиши ОДНО короткое предложение — самую суть того, о чём говорится (и что показано, если это видео).
+Для режима TL;DR:
+- напиши ОДНО короткое предложение;
+- поле "transcription" оставь пустой строкой;
+- поле "summary" должно быть одним коротким предложением с самой сутью."""
 
-Ответ строго в таком формате (без маркдауна, просто текст):
+    if mode == "transcription_only":
+        return f"""{common_rules}
 
-КРАТКОЕ СОДЕРЖАНИЕ:
-(одно предложение)"""
+Для режима transcription_only:
+- заполни поле "transcription";
+- поле "summary" оставь пустой строкой."""
 
-    return f"""{task} {lang_instruction} Выполни две задачи:
+    if mode == "summary_only":
+        return f"""{common_rules}
 
-1. Транскрипция — запиши дословно всё, что было сказано.
-2. Краткое содержание — в 1-3 предложениях {summary_note}.
+Для режима summary_only:
+- поле "transcription" оставь пустой строкой;
+- заполни поле "summary"."""
 
-Ответ строго в таком формате (без маркдауна, просто текст):
+    return f"""{common_rules}
 
-ТРАНСКРИПЦИЯ:
-(текст)
-
-КРАТКОЕ СОДЕРЖАНИЕ:
-(текст)"""
+Для режима both: Выполни две задачи и заполни оба поля: "transcription" и "summary"."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -287,7 +329,9 @@ def format_processing_status(status: str) -> str:
         "failed": "❌ failed",
         "ignored": "🚫 ignored",
         "rate_limited": "⏳ rate_limited",
+        "queued": "⏳ queued",
         "started": "⚙️ started",
+        "cancelled": "⏹ cancelled",
     }
     return labels.get(status, html.escape(status))
 
@@ -474,6 +518,13 @@ async def guard_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def parse_response_sections(raw: str, mode: str) -> tuple[str, str]:
     raw = raw.strip()
+    structured = parse_structured_response(raw)
+    if structured is not None:
+        transcription, summary = structured
+        if mode == "tldr" and not summary:
+            summary = transcription
+            transcription = ""
+        return transcription, summary
 
     if mode == "tldr":
         summary = extract_section(raw, "КРАТКОЕ СОДЕРЖАНИЕ:", tuple())
@@ -490,8 +541,47 @@ def parse_response_sections(raw: str, mode: str) -> tuple[str, str]:
     return raw, ""
 
 
-def format_response(raw: str, mode: str) -> str:
-    transcription, summary = parse_response_sections(raw, mode)
+def parse_structured_response(raw: str) -> tuple[str, str] | None:
+    candidates = [raw.strip()]
+    without_fence = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    without_fence = re.sub(r"\s*```$", "", without_fence.strip())
+    if without_fence not in candidates:
+        candidates.append(without_fence)
+
+    start = without_fence.find("{")
+    end = without_fence.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        json_slice = without_fence[start : end + 1]
+        if json_slice not in candidates:
+            candidates.append(json_slice)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+
+        transcription = normalize_model_field(parsed.get("transcription"))
+        summary = normalize_model_field(parsed.get("summary"))
+        if transcription or summary:
+            return transcription, summary
+
+    return None
+
+
+def normalize_model_field(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def format_response_sections(transcription: str, summary: str, mode: str) -> str:
+    transcription = transcription.strip()
+    summary = summary.strip()
 
     if mode == "tldr":
         return f"💡 {html.escape(summary)}"
@@ -502,7 +592,117 @@ def format_response(raw: str, mode: str) -> str:
     if mode in ("both", "summary_only") and summary:
         parts.append(f"📌 <b>Краткое содержание:</b>\n<blockquote expandable>{html.escape(summary)}</blockquote>")
 
-    return "\n\n".join(parts) if parts else html.escape(transcription)
+    return "\n\n".join(parts) if parts else html.escape(transcription or summary)
+
+
+def format_response(raw: str, mode: str) -> str:
+    transcription, summary = parse_response_sections(raw, mode)
+    return format_response_sections(transcription, summary, mode)
+
+
+def prefix_length_for_escaped_limit(text: str, max_escaped_len: int) -> int:
+    low = 0
+    high = len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(html.escape(text[:mid])) <= max_escaped_len:
+            low = mid
+        else:
+            high = mid - 1
+    return max(1, low)
+
+
+def split_plain_text_for_html(text: str, max_escaped_len: int) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+    for token in re.findall(r"\S+|\s+", text):
+        candidate = f"{current}{token}"
+        if current and len(html.escape(candidate.strip())) > max_escaped_len:
+            chunks.append(current.strip())
+            current = token.lstrip()
+        else:
+            current = candidate
+
+        while current and len(html.escape(current.strip())) > max_escaped_len:
+            cut_at = prefix_length_for_escaped_limit(current, max_escaped_len)
+            chunks.append(current[:cut_at].strip())
+            current = current[cut_at:].lstrip()
+
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
+
+
+def build_section_blocks(icon: str, label: str, text: str) -> list[str]:
+    if not text.strip():
+        return []
+
+    first_prefix = f"{icon} <b>{label}:</b>\n<blockquote expandable>"
+    next_prefix = f"{icon} <b>{label} (продолжение):</b>\n<blockquote expandable>"
+    suffix = "</blockquote>"
+    text_limit = min(
+        TELEGRAM_SECTION_TEXT_LIMIT,
+        TELEGRAM_SAFE_MESSAGE_LIMIT - max(len(first_prefix), len(next_prefix)) - len(suffix) - 20,
+    )
+    blocks = []
+    for index, piece in enumerate(split_plain_text_for_html(text, text_limit)):
+        prefix = first_prefix if index == 0 else next_prefix
+        blocks.append(f"{prefix}{html.escape(piece)}{suffix}")
+    return blocks
+
+
+def pack_html_blocks(header: str, blocks: list[str]) -> list[str]:
+    chunks: list[str] = []
+    current = header.strip()
+
+    for block in blocks:
+        separator = "\n\n" if current else ""
+        candidate = f"{current}{separator}{block}"
+        if current and len(candidate) <= TELEGRAM_SAFE_MESSAGE_LIMIT:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        current = block
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_final_reply_chunks(
+    media_emoji: str,
+    duration_str: str,
+    user_name: str,
+    transcription: str,
+    summary: str,
+    mode: str,
+    processing_time_text: str,
+) -> list[str]:
+    header = (
+        f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)} "
+        f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>"
+    )
+
+    if mode == "tldr":
+        text = (summary or transcription).strip()
+        text_limit = TELEGRAM_SAFE_MESSAGE_LIMIT - len("💡 ") - 20
+        blocks = [f"💡 {html.escape(piece)}" for piece in split_plain_text_for_html(text, text_limit)]
+    else:
+        blocks = []
+        if mode in ("both", "transcription_only"):
+            blocks.extend(build_section_blocks("📝", "Транскрипция", transcription))
+        if mode in ("both", "summary_only"):
+            blocks.extend(build_section_blocks("📌", "Краткое содержание", summary))
+
+    if not blocks:
+        blocks = ["⚠️ Gemini вернул пустой ответ."]
+
+    return pack_html_blocks(header, blocks)
 
 
 def build_final_reply(
@@ -512,12 +712,20 @@ def build_final_reply(
     raw: str,
     mode: str,
     processing_time_text: str,
+    parsed_sections: tuple[str, str] | None = None,
 ) -> str:
-    header = (
-        f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)} "
-        f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>\n\n"
+    transcription, summary = parsed_sections or parse_response_sections(raw, mode)
+    return "\n\n".join(
+        build_final_reply_chunks(
+            media_emoji,
+            duration_str,
+            user_name,
+            transcription,
+            summary,
+            mode,
+            processing_time_text,
+        )
     )
-    return header + format_response(raw, mode)
 
 
 def build_help_text(user_id: int) -> str:
@@ -533,6 +741,9 @@ def build_help_text(user_id: int) -> str:
         "<b>Язык ответа:</b>\n"
         "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
         "/language ru | en | de | ... — перевести\n\n"
+        "<b>Управление обработкой:</b>\n"
+        "/stop — остановить последнюю активную или ожидающую обработку\n"
+        "/next — переключить последнюю активную обработку на следующую модель\n\n"
         "<b>Прочее:</b>\n"
         "/myid — узнать свой Telegram ID\n"
         "/feedback — бот попросит следующим сообщением написать feedback\n"
@@ -654,19 +865,56 @@ def models_tried_text(run_meta: dict[str, object]) -> str:
     return " -> ".join(models)
 
 
-async def safe_edit_text(message, text: str) -> None:
+def job_keyboard(job_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("⏹ Stop", callback_data=f"job:stop:{job_id}"),
+                InlineKeyboardButton("⏭ Next model", callback_data=f"job:next:{job_id}"),
+            ]
+        ]
+    )
+
+
+async def safe_edit_text(message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     try:
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
     except Exception as error:
         if "message is not modified" not in str(error).lower():
             raise
 
 
+async def safe_reply_text(message, text: str) -> None:
+    try:
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+    except Exception as error:
+        retry_after = get_retry_after_seconds(error)
+        if retry_after is None:
+            raise
+        await asyncio.sleep(retry_after)
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+class JobCancelled(Exception):
+    pass
+
+
+class NextModelRequested(Exception):
+    pass
+
+
 class ProcessingProgress:
-    def __init__(self, message, initial_status_text: str) -> None:
+    def __init__(
+        self,
+        message,
+        initial_status_text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
         self.message = message
         self.initial_status_text = initial_status_text
         self.status_text = initial_status_text
+        self.reply_markup = reply_markup
         self.started_monotonic = time.monotonic()
         self._last_rendered_text = ""
         self._stop_event = asyncio.Event()
@@ -694,7 +942,7 @@ class ProcessingProgress:
             if time.monotonic() < self._retry_after_until:
                 return
             try:
-                await safe_edit_text(self.message, rendered)
+                await safe_edit_text(self.message, rendered, reply_markup=self.reply_markup)
             except Exception as error:
                 retry_after = get_retry_after_seconds(error)
                 if retry_after is None:
@@ -740,14 +988,44 @@ class ProcessingProgress:
         self._stop_event.set()
 
 
-async def show_overload_countdown(progress: ProcessingProgress, model_name: str) -> None:
+async def wait_with_job_controls(job: Any | None, seconds: float) -> None:
+    if job is None:
+        await asyncio.sleep(seconds)
+        return
+
+    try:
+        await asyncio.wait_for(job.cancel_event.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        if job.next_model_event.is_set():
+            raise NextModelRequested("next_model_requested")
+        return
+
+    if job.cancel_event.is_set():
+        raise JobCancelled("job_cancelled")
+
+
+def ensure_job_can_continue(job: Any | None) -> None:
+    if job is None:
+        return
+    if job.cancel_event.is_set():
+        raise JobCancelled("job_cancelled")
+    if job.next_model_event.is_set():
+        raise NextModelRequested("next_model_requested")
+
+
+async def show_overload_countdown(
+    progress: ProcessingProgress,
+    model_name: str,
+    job: Any | None = None,
+) -> None:
     for seconds_left in range(MODEL_OVERLOAD_RETRY_DELAY, 0, -1):
+        ensure_job_can_continue(job)
         await progress.set_status_text(
             "⚠️ <b>Модель перегружена</b>\n"
             f"<code>{html.escape(model_name)}</code>\n"
             f"Пробую снова через <b>{seconds_left}</b> сек...",
         )
-        await asyncio.sleep(1)
+        await wait_with_job_controls(job, 1)
 
 
 async def stop_progress(progress: ProcessingProgress, progress_task: asyncio.Task) -> None:
@@ -758,38 +1036,252 @@ async def stop_progress(progress: ProcessingProgress, progress_task: asyncio.Tas
         logger.warning("PROGRESS TASK ERROR | error=%s", error)
 
 
-async def deliver_processing_reply(message, text: str) -> None:
+@dataclass
+class MediaJob:
+    job_id: int
+    context: Any
+    message: Any
+    processing_message: Any
+    media_type: str
+    media_file_id: str
+    mime_type: str
+    progress_text: str
+    media_emoji: str
+    duration_seconds: int
+    duration_str: str
+    file_size_kb: int | None
+    scope_type: str
+    scope_id: int
+    mode: str
+    language: str
+    chat_id: int
+    chat_title: str
+    user_id: int
+    user_name: str
+    message_processing_id: int
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    next_model_event: asyncio.Event = field(default_factory=asyncio.Event)
+    status: str = "queued"
+    task: asyncio.Task | None = None
+    progress: ProcessingProgress | None = None
+    current_model_index: int = -1
+    current_model_name: str | None = None
+
+
+def queued_job_text(position: int) -> str:
+    return (
+        "⏳ <b>В очереди на обработку</b>\n"
+        f"Позиция: <b>{position}</b>\n\n"
+        "Я начну автоматически, когда освободится слот."
+    )
+
+
+def cancelled_job_text() -> str:
+    return "⏹ <b>Обработка остановлена.</b>"
+
+
+class JobManager:
+    def __init__(self) -> None:
+        self.active_jobs: dict[int, MediaJob] = {}
+        self.queue: list[MediaJob] = []
+        self._next_job_id = 1
+        self._lock = asyncio.Lock()
+
+    def allocate_job_id(self) -> int:
+        job_id = self._next_job_id
+        self._next_job_id += 1
+        return job_id
+
+    def _has_capacity_locked(self, job: MediaJob) -> bool:
+        user_active = sum(1 for active_job in self.active_jobs.values() if active_job.user_id == job.user_id)
+        chat_active = sum(1 for active_job in self.active_jobs.values() if active_job.chat_id == job.chat_id)
+        return user_active < MAX_ACTIVE_JOBS_PER_USER and chat_active < MAX_ACTIVE_JOBS_PER_CHAT
+
+    def _start_job(self, job: MediaJob) -> None:
+        job.status = "active"
+        job.task = asyncio.create_task(process_media_job(job))
+
+    async def submit(self, job: MediaJob) -> None:
+        should_start = False
+        async with self._lock:
+            if self._has_capacity_locked(job):
+                self.active_jobs[job.job_id] = job
+                should_start = True
+            else:
+                self.queue.append(job)
+                job.status = "queued"
+
+        if should_start:
+            self._start_job(job)
+            return
+
+        await self.refresh_queue_positions()
+
+    async def finish(self, job: MediaJob) -> None:
+        jobs_to_start: list[MediaJob] = []
+        async with self._lock:
+            self.active_jobs.pop(job.job_id, None)
+            job.status = "done"
+
+            remaining_queue: list[MediaJob] = []
+            for queued_job in self.queue:
+                if self._has_capacity_locked(queued_job):
+                    self.active_jobs[queued_job.job_id] = queued_job
+                    jobs_to_start.append(queued_job)
+                else:
+                    remaining_queue.append(queued_job)
+            self.queue = remaining_queue
+
+        for queued_job in jobs_to_start:
+            self._start_job(queued_job)
+        await self.refresh_queue_positions()
+
+    async def refresh_queue_positions(self) -> None:
+        async with self._lock:
+            queued_jobs = list(self.queue)
+
+        for position, job in enumerate(queued_jobs, start=1):
+            try:
+                await safe_edit_text(
+                    job.processing_message,
+                    queued_job_text(position),
+                    reply_markup=job_keyboard(job.job_id),
+                )
+            except Exception as error:
+                logger.warning("QUEUE MESSAGE UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+
+    async def get_job(self, job_id: int) -> MediaJob | None:
+        async with self._lock:
+            if job_id in self.active_jobs:
+                return self.active_jobs[job_id]
+            for job in self.queue:
+                if job.job_id == job_id:
+                    return job
+        return None
+
+    async def latest_for_user_chat(
+        self,
+        user_id: int,
+        chat_id: int,
+        *,
+        active: bool = True,
+        queued: bool = True,
+    ) -> MediaJob | None:
+        candidates: list[MediaJob] = []
+        async with self._lock:
+            if active:
+                candidates.extend(
+                    job for job in self.active_jobs.values() if job.user_id == user_id and job.chat_id == chat_id
+                )
+            if queued:
+                candidates.extend(job for job in self.queue if job.user_id == user_id and job.chat_id == chat_id)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda job: job.job_id)
+
+    async def cancel_job(self, job: MediaJob) -> str:
+        was_queued = False
+        was_active = False
+        async with self._lock:
+            if job.job_id in self.active_jobs:
+                was_active = True
+            else:
+                new_queue = [queued_job for queued_job in self.queue if queued_job.job_id != job.job_id]
+                if len(new_queue) != len(self.queue):
+                    self.queue = new_queue
+                    was_queued = True
+
+        if was_queued:
+            job.status = "cancelled"
+            STORAGE.update_message_processing(
+                job.message_processing_id,
+                status="cancelled",
+                completed_at=utc_now(),
+                processing_ms=0,
+                final_reply_text=cancelled_job_text(),
+                error_code="cancelled",
+                error_text="Cancelled while queued",
+            )
+            await deliver_processing_reply(job.processing_message, cancelled_job_text())
+            await self.refresh_queue_positions()
+            return "queued_cancelled"
+
+        if was_active:
+            job.cancel_event.set()
+            if job.progress is not None:
+                try:
+                    await job.progress.set_status_text("⏹ <b>Останавливаю обработку...</b>")
+                except Exception as error:
+                    logger.warning("CANCEL STATUS UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+            return "active_cancelling"
+
+        return "not_found"
+
+    async def request_next_model(self, job: MediaJob) -> str:
+        async with self._lock:
+            is_active = job.job_id in self.active_jobs
+
+        if not is_active:
+            return "not_active"
+        if job.current_model_index < 0:
+            return "not_started"
+        if job.current_model_index >= len(GEMINI_MODEL_CHAIN) - 1:
+            return "last_model"
+
+        job.next_model_event.set()
+        if job.progress is not None:
+            try:
+                await job.progress.set_status_text(
+                    "⏭ <b>Переключаюсь на следующую модель...</b>\n"
+                    f"Текущая: <code>{html.escape(job.current_model_name or '-')}</code>"
+                )
+            except Exception as error:
+                logger.warning("NEXT STATUS UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+        return "switching"
+
+
+JOB_MANAGER = JobManager()
+
+
+async def deliver_processing_reply(message, text: str | list[str]) -> None:
+    chunks = [text] if isinstance(text, str) else [chunk for chunk in text if chunk]
+    if not chunks:
+        chunks = [unknown_internal_error_text()]
+
+    first_chunk = chunks[0]
     try:
-        await safe_edit_text(message, text)
-        return
+        await safe_edit_text(message, first_chunk, reply_markup=None)
     except Exception as error:
         retry_after = get_retry_after_seconds(error)
         if retry_after is None:
             logger.warning("FINAL MESSAGE EDIT FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
-            await message.reply_text(text, parse_mode=ParseMode.HTML)
-            return
-
-        logger.warning(
-            "FINAL MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
-            retry_after,
-            getattr(message, "message_id", "unknown"),
-        )
-        try:
-            await message.reply_text(
-                "⏳ Telegram временно ограничил обновление этого сообщения.\n"
-                "Подожди немного, я пришлю готовый результат сразу после ограничения."
+            await safe_reply_text(message, first_chunk)
+        else:
+            logger.warning(
+                "FINAL MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
+                retry_after,
+                getattr(message, "message_id", "unknown"),
             )
-        except Exception as notify_error:
-            logger.warning("FINAL FLOOD NOTICE FAILED | error=%s", notify_error)
+            try:
+                await message.reply_text(
+                    "⏳ Telegram временно ограничил обновление этого сообщения.\n"
+                    "Подожди немного, я пришлю готовый результат сразу после ограничения."
+                )
+            except Exception as notify_error:
+                logger.warning("FINAL FLOOD NOTICE FAILED | error=%s", notify_error)
 
-        await asyncio.sleep(retry_after)
+            await asyncio.sleep(retry_after)
+            try:
+                await safe_edit_text(message, first_chunk, reply_markup=None)
+            except Exception as second_error:
+                logger.warning("FINAL EDIT RETRY FAILED | error=%s", second_error)
+                await safe_reply_text(message, first_chunk)
+
+    for chunk in chunks[1:]:
         try:
-            await safe_edit_text(message, text)
-            return
-        except Exception as second_error:
-            logger.warning("FINAL EDIT RETRY FAILED | error=%s", second_error)
-
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
+            await safe_reply_text(message, chunk)
+        except Exception as error:
+            logger.warning("FOLLOW-UP RESULT MESSAGE FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
 
 
 # ── Gemini call with fallback ─────────────────────────────────────────────────
@@ -800,23 +1292,26 @@ async def call_gemini(
     model_name: str,
     message_processing_id: int,
     run_meta: dict[str, object],
+    job: MediaJob | None = None,
 ) -> str:
     last_error = None
 
     for client_index, client in enumerate(gemini_clients):
+        ensure_job_can_continue(job)
         api_key_slot = "primary" if client_index == 0 else "backup"
         attempt_no = int(run_meta["attempt_no"])
         started_at = utc_now()
 
         try:
-            response = await asyncio.wait_for(
+            generation_task = asyncio.create_task(
                 asyncio.to_thread(
                     client.models.generate_content,
                     model=model_name,
                     contents=contents,
-                ),
-                timeout=MODEL_REQUEST_TIMEOUT,
+                    config=GEMINI_GENERATION_CONFIG,
+                )
             )
+            response = await wait_for_model_response(generation_task, job)
             completed_at = utc_now()
             STORAGE.add_model_attempt(
                 message_processing_id=message_processing_id,
@@ -830,7 +1325,39 @@ async def call_gemini(
             run_meta["attempt_no"] = attempt_no + 1
             if client_index > 0:
                 run_meta["fallback_key_used"] = True
-            return response.text
+            return response.text or ""
+        except JobCancelled as error:
+            completed_at = utc_now()
+            STORAGE.add_model_attempt(
+                message_processing_id=message_processing_id,
+                attempt_no=attempt_no,
+                model_name=model_name,
+                api_key_slot=api_key_slot,
+                status="cancelled",
+                started_at=started_at,
+                completed_at=completed_at,
+                error_text=shorten_error(error),
+            )
+            run_meta["attempt_no"] = attempt_no + 1
+            if client_index > 0:
+                run_meta["fallback_key_used"] = True
+            raise
+        except NextModelRequested as error:
+            completed_at = utc_now()
+            STORAGE.add_model_attempt(
+                message_processing_id=message_processing_id,
+                attempt_no=attempt_no,
+                model_name=model_name,
+                api_key_slot=api_key_slot,
+                status="skipped",
+                started_at=started_at,
+                completed_at=completed_at,
+                error_text=shorten_error(error),
+            )
+            run_meta["attempt_no"] = attempt_no + 1
+            if client_index > 0:
+                run_meta["fallback_key_used"] = True
+            raise
         except asyncio.TimeoutError:
             error = RuntimeError(
                 f"model_request_timeout: generate_content exceeded {MODEL_REQUEST_TIMEOUT}s for {model_name}"
@@ -878,18 +1405,51 @@ async def call_gemini(
     raise last_error
 
 
+async def wait_for_model_response(generation_task: asyncio.Task, job: MediaJob | None):
+    if job is None:
+        return await asyncio.wait_for(generation_task, timeout=MODEL_REQUEST_TIMEOUT)
+
+    cancel_task = asyncio.create_task(job.cancel_event.wait())
+    next_task = asyncio.create_task(job.next_model_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {generation_task, cancel_task, next_task},
+            timeout=MODEL_REQUEST_TIMEOUT,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if job.cancel_event.is_set():
+            generation_task.cancel()
+            raise JobCancelled("job_cancelled")
+        if job.next_model_event.is_set():
+            generation_task.cancel()
+            raise NextModelRequested("next_model_requested")
+        if generation_task in done:
+            return await generation_task
+
+        generation_task.cancel()
+        raise asyncio.TimeoutError
+    finally:
+        cancel_task.cancel()
+        next_task.cancel()
+
+
 async def call_gemini_with_retries(
     contents: list,
     progress: ProcessingProgress,
     message_processing_id: int,
     run_meta: dict[str, object],
+    job: MediaJob | None = None,
 ) -> tuple[str, str]:
     last_error = None
 
     for model_index, model_name in enumerate(GEMINI_MODEL_CHAIN):
+        if job is not None:
+            job.current_model_index = model_index
+            job.current_model_name = model_name
         attempts_for_model = 2 if model_index == 0 else 1
 
         for attempt in range(attempts_for_model):
+            ensure_job_can_continue(job)
             models = run_meta.setdefault("models_tried", [])
             if isinstance(models, list):
                 models.append(model_name)
@@ -902,8 +1462,25 @@ async def call_gemini_with_retries(
                         "Пробую обработать сообщение снова...",
                     )
 
-                raw = await call_gemini(contents, model_name, message_processing_id, run_meta)
+                raw = await call_gemini(contents, model_name, message_processing_id, run_meta, job)
                 return raw, model_name
+            except JobCancelled:
+                raise
+            except NextModelRequested as error:
+                last_error = error
+                if job is not None:
+                    job.next_model_event.clear()
+
+                next_model_index = model_index + 1
+                if next_model_index < len(GEMINI_MODEL_CHAIN):
+                    next_model = GEMINI_MODEL_CHAIN[next_model_index]
+                    await progress.set_status_text(
+                        "⏭ <b>Переключаюсь на следующую модель</b>\n"
+                        f"<code>{html.escape(model_name)}</code> → <code>{html.escape(next_model)}</code>"
+                    )
+                    break
+
+                raise
             except Exception as error:
                 last_error = error
 
@@ -919,8 +1496,14 @@ async def call_gemini_with_retries(
                 )
 
                 if model_index == 0 and attempt == 0:
-                    await show_overload_countdown(progress, model_name)
-                    continue
+                    try:
+                        await show_overload_countdown(progress, model_name, job)
+                        continue
+                    except NextModelRequested as next_error:
+                        last_error = next_error
+                        if job is not None:
+                            job.next_model_event.clear()
+                        break
 
                 next_model_index = model_index + 1
                 if next_model_index < len(GEMINI_MODEL_CHAIN):
@@ -1409,6 +1992,80 @@ async def handle_broadcast_changelog(update: Update, context: ContextTypes.DEFAU
     )
 
 
+def control_result_text(result: str) -> str:
+    labels = {
+        "queued_cancelled": "⏹ Убрал задачу из очереди.",
+        "active_cancelling": "⏹ Останавливаю обработку.",
+        "switching": "⏭ Переключаюсь на следующую модель.",
+        "not_found": "ℹ️ Эта обработка уже завершена.",
+        "not_active": "ℹ️ Эта обработка сейчас не активна.",
+        "not_started": "ℹ️ Gemini ещё не начал обработку этой задачи.",
+        "last_model": "ℹ️ Это последняя модель в цепочке.",
+    }
+    return labels.get(result, "ℹ️ Команда обработана.")
+
+
+async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    job = await JOB_MANAGER.latest_for_user_chat(
+        update.effective_user.id,
+        update.effective_chat.id,
+        active=True,
+        queued=True,
+    )
+    if job is None:
+        await update.message.reply_text("ℹ️ У тебя нет активной или ожидающей обработки в этом чате.")
+        return
+
+    result = await JOB_MANAGER.cancel_job(job)
+    await update.message.reply_text(control_result_text(result))
+
+
+async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    job = await JOB_MANAGER.latest_for_user_chat(
+        update.effective_user.id,
+        update.effective_chat.id,
+        active=True,
+        queued=False,
+    )
+    if job is None:
+        await update.message.reply_text("ℹ️ У тебя нет активной обработки в этом чате.")
+        return
+
+    result = await JOB_MANAGER.request_next_model(job)
+    await update.message.reply_text(control_result_text(result))
+
+
+async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+
+    match = re.fullmatch(r"job:(stop|next):(\d+)", query.data)
+    if match is None:
+        return
+
+    action = match.group(1)
+    job_id = int(match.group(2))
+    job = await JOB_MANAGER.get_job(job_id)
+    if job is None:
+        await query.answer("Эта обработка уже завершена.", show_alert=False)
+        return
+
+    user_id = query.from_user.id if query.from_user is not None else 0
+    if user_id != job.user_id and not is_admin(user_id):
+        await query.answer("Управлять обработкой может только отправитель.", show_alert=True)
+        return
+
+    if action == "stop":
+        result = await JOB_MANAGER.cancel_job(job)
+    else:
+        result = await JOB_MANAGER.request_next_model(job)
+
+    await query.answer(control_result_text(result), show_alert=False)
+
+
 # ── Media handlers ────────────────────────────────────────────────────────────
 
 
@@ -1488,11 +2145,8 @@ async def handle_media(
         await message.reply_text(rate_limit_text)
         return
 
-    processing = await message.reply_text("⏱ Запускаю обработку...")
-    progress = ProcessingProgress(processing, str(media_meta["progress_text"]))
-    progress_task = asyncio.create_task(progress.run())
-    t_start = time.monotonic()
-    started_at = utc_now()
+    job_id = JOB_MANAGER.allocate_job_id()
+    processing = await message.reply_text("⏱ Запускаю обработку...", reply_markup=job_keyboard(job_id))
     message_processing_id = STORAGE.create_message_processing(
         telegram_message_id=message.message_id,
         chat_id=chat_id,
@@ -1505,6 +2159,46 @@ async def handle_media(
         scope_id=scope_id,
         mode=mode,
         language=language,
+        status="queued",
+    )
+    job = MediaJob(
+        job_id=job_id,
+        context=context,
+        message=message,
+        processing_message=processing,
+        media_type=media_type,
+        media_file_id=media.file_id,
+        mime_type=str(media_meta["mime_type"]),
+        progress_text=str(media_meta["progress_text"]),
+        media_emoji=str(media_meta["emoji"]),
+        duration_seconds=duration,
+        duration_str=duration_str,
+        file_size_kb=file_size_kb,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        mode=mode,
+        language=language,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        user_id=user_id,
+        user_name=user_name,
+        message_processing_id=message_processing_id,
+    )
+    await JOB_MANAGER.submit(job)
+
+
+async def process_media_job(job: MediaJob) -> None:
+    progress = ProcessingProgress(
+        job.processing_message,
+        job.progress_text,
+        reply_markup=job_keyboard(job.job_id),
+    )
+    job.progress = progress
+    progress_task: asyncio.Task | None = asyncio.create_task(progress.run())
+    t_start = time.monotonic()
+    started_at = utc_now()
+    STORAGE.update_message_processing(
+        job.message_processing_id,
         status="started",
         started_at=started_at,
     )
@@ -1515,44 +2209,51 @@ async def handle_media(
     }
 
     try:
-        file = await context.bot.get_file(media.file_id)
+        ensure_job_can_continue(job)
+        file = await job.context.bot.get_file(job.media_file_id)
+        ensure_job_can_continue(job)
         data = await file.download_as_bytearray()
+        ensure_job_can_continue(job)
         actual_file_size_kb = len(data) // 1024
-        mime_type = str(media_meta["mime_type"])
-        prompt = build_prompt(media_type, language, mode)
+        prompt = build_prompt(job.media_type, job.language, job.mode, job.duration_seconds)
 
         raw, model_used = await call_gemini_with_retries(
             [
                 types.Content(
                     parts=[
-                        types.Part.from_bytes(data=bytes(data), mime_type=mime_type),
+                        types.Part.from_bytes(data=bytes(data), mime_type=job.mime_type),
                         types.Part.from_text(text=prompt),
                     ]
                 )
             ],
             progress,
-            message_processing_id,
+            job.message_processing_id,
             run_meta,
+            job,
         )
+        ensure_job_can_continue(job)
 
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
         processing_time_text = format_processing_time(elapsed_seconds)
-        transcription, summary = parse_response_sections(raw, mode)
-        final_reply = build_final_reply(
-            str(media_meta["emoji"]),
-            duration_str,
-            user_name,
-            raw,
-            mode,
+        transcription, summary = parse_response_sections(raw, job.mode)
+        final_reply_chunks = build_final_reply_chunks(
+            job.media_emoji,
+            job.duration_str,
+            job.user_name,
+            transcription,
+            summary,
+            job.mode,
             processing_time_text,
         )
+        final_reply = "\n\n".join(final_reply_chunks)
         await stop_progress(progress, progress_task)
-        await deliver_processing_reply(processing, final_reply)
+        progress_task = None
+        await deliver_processing_reply(job.processing_message, final_reply_chunks)
 
-        STORAGE.increment_stats(user_id, media_type)
+        STORAGE.increment_stats(job.user_id, job.media_type)
         STORAGE.update_message_processing(
-            message_processing_id,
+            job.message_processing_id,
             status="success",
             completed_at=utc_now(),
             processing_ms=elapsed_ms,
@@ -1568,27 +2269,57 @@ async def handle_media(
 
         logger.info(
             "✅ %s | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | model=%s | time=%.1fs | text: %s",
-            media_type.upper(),
-            chat_title,
-            chat_id,
-            user_name,
-            user_id,
-            duration_str,
+            job.media_type.upper(),
+            job.chat_title,
+            job.chat_id,
+            job.user_name,
+            job.user_id,
+            job.duration_str,
             actual_file_size_kb,
-            mode,
-            language,
+            job.mode,
+            job.language,
             model_used,
             elapsed_seconds,
             raw.replace("\n", " ")[:300],
         )
+    except JobCancelled as error:
+        elapsed_seconds = time.monotonic() - t_start
+        elapsed_ms = int(elapsed_seconds * 1000)
+        if progress_task is not None:
+            await stop_progress(progress, progress_task)
+            progress_task = None
+
+        STORAGE.update_message_processing(
+            job.message_processing_id,
+            status="cancelled",
+            completed_at=utc_now(),
+            processing_ms=elapsed_ms,
+            final_reply_text=cancelled_job_text(),
+            models_tried=models_tried_text(run_meta),
+            fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
+            error_code="cancelled",
+            error_text=shorten_error(error),
+        )
+        logger.info(
+            "⏹ %s CANCELLED | chat=%s (%d) | user=%s (%d) | time=%.1fs",
+            job.media_type.upper(),
+            job.chat_title,
+            job.chat_id,
+            job.user_name,
+            job.user_id,
+            elapsed_seconds,
+        )
+        await deliver_processing_reply(job.processing_message, cancelled_job_text())
     except Exception as error:
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
         user_error_text = friendly_error(error)
-        await stop_progress(progress, progress_task)
+        if progress_task is not None:
+            await stop_progress(progress, progress_task)
+            progress_task = None
 
         STORAGE.update_message_processing(
-            message_processing_id,
+            job.message_processing_id,
             status="failed",
             completed_at=utc_now(),
             processing_ms=elapsed_ms,
@@ -1601,15 +2332,22 @@ async def handle_media(
 
         logger.error(
             "❌ %s ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error=%s",
-            media_type.upper(),
-            chat_title,
-            chat_id,
-            user_name,
-            user_id,
+            job.media_type.upper(),
+            job.chat_title,
+            job.chat_id,
+            job.user_name,
+            job.user_id,
             elapsed_seconds,
             error,
         )
-        await deliver_processing_reply(processing, user_error_text)
+        await deliver_processing_reply(job.processing_message, user_error_text)
+    finally:
+        job.current_model_index = -1
+        job.current_model_name = None
+        job.progress = None
+        if progress_task is not None:
+            await stop_progress(progress, progress_task)
+        await JOB_MANAGER.finish(job)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1640,11 +2378,14 @@ def main() -> None:
     app.add_handler(CommandHandler("unblock", handle_unblock))
     app.add_handler(CommandHandler("broadcast_changelog", handle_broadcast_changelog))
     app.add_handler(CommandHandler("language", handle_language))
+    app.add_handler(CommandHandler("stop", handle_stop))
+    app.add_handler(CommandHandler("next", handle_next))
     app.add_handler(CommandHandler("transcription_only", handle_transcription_only))
     app.add_handler(CommandHandler("summary_only", handle_summary_only))
     app.add_handler(CommandHandler("tldr", handle_tldr))
     app.add_handler(CommandHandler("both", handle_both))
     app.add_handler(CommandHandler("ignore", handle_ignore))
+    app.add_handler(CallbackQueryHandler(handle_job_callback, pattern=r"^job:(stop|next):\d+$"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pending_feedback_message))
