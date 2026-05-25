@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 DEFAULT_MODE = "both"
 DEFAULT_LANGUAGE = "auto"
-LATEST_SCHEMA_VERSION = 4
+DEFAULT_TRANSCRIPTION_TYPE = "clean"
+LATEST_SCHEMA_VERSION = 5
 
 MIGRATION_1_SQL = """
 CREATE TABLE IF NOT EXISTS settings_scopes (
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS settings (
     scope_id INTEGER NOT NULL,
     mode TEXT NOT NULL,
     language TEXT NOT NULL,
+    transcription_type TEXT NOT NULL DEFAULT 'clean',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (scope_type, scope_id),
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS message_processing (
     scope_id INTEGER NOT NULL,
     mode TEXT NOT NULL,
     language TEXT NOT NULL,
+    transcription_type TEXT NOT NULL DEFAULT 'clean',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     started_at TEXT,
@@ -233,12 +236,27 @@ class Storage:
     def _migration_4_command_rate_limits(self, conn: sqlite3.Connection) -> None:
         conn.executescript(MIGRATION_4_SQL)
 
+    def _column_exists(self, conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(row["name"] == column_name for row in rows)
+
+    def _migration_5_transcription_type(self, conn: sqlite3.Connection) -> None:
+        if not self._column_exists(conn, "settings", "transcription_type"):
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN transcription_type TEXT NOT NULL DEFAULT 'clean'"
+            )
+        if not self._column_exists(conn, "message_processing", "transcription_type"):
+            conn.execute(
+                "ALTER TABLE message_processing ADD COLUMN transcription_type TEXT NOT NULL DEFAULT 'clean'"
+            )
+
     def init_db(self) -> None:
         migrations: dict[int, Callable[[sqlite3.Connection], None]] = {
             1: self._migration_1_initial_schema,
             2: self._migration_2_pending_feedback,
             3: self._migration_3_changelog_broadcasts,
             4: self._migration_4_command_rate_limits,
+            5: self._migration_5_transcription_type,
         }
 
         with self._connect() as conn:
@@ -307,43 +325,55 @@ class Storage:
                 (scope_type, scope_id, now, now),
             )
 
-    def get_settings(self, scope_type: str, scope_id: int) -> tuple[str, str]:
+    def get_settings(self, scope_type: str, scope_id: int) -> tuple[str, str, str]:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT mode, language
+                SELECT mode, language, transcription_type
                 FROM settings
                 WHERE scope_type = ? AND scope_id = ?
                 """,
                 (scope_type, scope_id),
             ).fetchone()
         if row is None:
-            return DEFAULT_MODE, DEFAULT_LANGUAGE
-        return row["mode"], row["language"]
+            return DEFAULT_MODE, DEFAULT_LANGUAGE, DEFAULT_TRANSCRIPTION_TYPE
+        return row["mode"], row["language"], row["transcription_type"]
 
-    def save_settings(self, scope_type: str, scope_id: int, mode: str, language: str) -> None:
+    def save_settings(
+        self,
+        scope_type: str,
+        scope_id: int,
+        mode: str,
+        language: str,
+        transcription_type: str,
+    ) -> None:
         now = utc_now()
         self.ensure_scope(scope_type, scope_id)
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO settings (scope_type, scope_id, mode, language, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO settings (scope_type, scope_id, mode, language, transcription_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(scope_type, scope_id) DO UPDATE SET
                     mode = excluded.mode,
                     language = excluded.language,
+                    transcription_type = excluded.transcription_type,
                     updated_at = excluded.updated_at
                 """,
-                (scope_type, scope_id, mode, language, now, now),
+                (scope_type, scope_id, mode, language, transcription_type, now, now),
             )
 
     def set_mode(self, scope_type: str, scope_id: int, mode: str) -> None:
-        _, language = self.get_settings(scope_type, scope_id)
-        self.save_settings(scope_type, scope_id, mode, language)
+        _, language, transcription_type = self.get_settings(scope_type, scope_id)
+        self.save_settings(scope_type, scope_id, mode, language, transcription_type)
 
     def set_language(self, scope_type: str, scope_id: int, language: str) -> None:
-        mode, _ = self.get_settings(scope_type, scope_id)
-        self.save_settings(scope_type, scope_id, mode, language)
+        mode, _, transcription_type = self.get_settings(scope_type, scope_id)
+        self.save_settings(scope_type, scope_id, mode, language, transcription_type)
+
+    def set_transcription_type(self, scope_type: str, scope_id: int, transcription_type: str) -> None:
+        mode, language, _ = self.get_settings(scope_type, scope_id)
+        self.save_settings(scope_type, scope_id, mode, language, transcription_type)
 
     def add_admin_block(self, target_user_id: int, admin_user_id: int) -> None:
         now = utc_now()
@@ -740,6 +770,7 @@ class Storage:
                 mp.scope_id,
                 mp.mode,
                 mp.language,
+                mp.transcription_type,
                 mp.status,
                 mp.created_at,
                 mp.started_at,
@@ -875,6 +906,7 @@ class Storage:
         mode: str,
         language: str,
         status: str,
+        transcription_type: str = DEFAULT_TRANSCRIPTION_TYPE,
         started_at: str | None = None,
         completed_at: str | None = None,
         processing_ms: int | None = None,
@@ -898,6 +930,7 @@ class Storage:
                     scope_id,
                     mode,
                     language,
+                    transcription_type,
                     status,
                     created_at,
                     started_at,
@@ -906,7 +939,7 @@ class Storage:
                     final_reply_text,
                     error_code,
                     error_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     telegram_message_id,
@@ -920,6 +953,7 @@ class Storage:
                     scope_id,
                     mode,
                     language,
+                    transcription_type,
                     status,
                     created_at,
                     started_at,

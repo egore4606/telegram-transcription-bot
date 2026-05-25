@@ -69,11 +69,12 @@ if GEMINI_API_KEY_2:
 
 GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
 STORAGE = Storage(DATABASE_PATH)
-PUBLIC_CHANGELOG_VERSION = "2026-05-25"
+PUBLIC_CHANGELOG_VERSION = "2026-05-25-2"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
 Вот что стало лучше:
+- добавлена настройка типа транскрипции: <code>/transcription_type clean</code> для очищенного текста и <code>/transcription_type verbatim</code> для дословного оригинала;
 - новая цепочка Gemini начинается с <code>gemini-3.5-flash</code>;
 - голосовые и кружочки теперь обрабатываются в фоне: несколько сообщений могут идти параллельно, лишние встают в очередь;
 - под сообщением обработки появились кнопки <b>Stop</b> и <b>Next model</b>, также работают команды <code>/stop</code> и <code>/next</code>;
@@ -90,6 +91,7 @@ USER_COMMANDS = [
     BotCommand("summary_only", "Только краткое содержание"),
     BotCommand("tldr", "Одно предложение с самой сутью"),
     BotCommand("language", "Настроить язык ответа"),
+    BotCommand("transcription_type", "Настроить тип транскрипции"),
     BotCommand("stop", "Остановить последнюю обработку"),
     BotCommand("next", "Переключить последнюю обработку на следующую модель"),
     BotCommand("myid", "Показать ваш Telegram ID"),
@@ -110,7 +112,13 @@ ADMIN_COMMANDS = [
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 
-def build_prompt(media_type: str, language: str, mode: str, duration_seconds: int | None = None) -> str:
+def build_prompt(
+    media_type: str,
+    language: str,
+    mode: str,
+    duration_seconds: int | None = None,
+    transcription_type: str = "clean",
+) -> str:
     if media_type == "voice":
         task = "Это голосовое сообщение из Telegram."
         media_instruction = "Визуального контекста нет."
@@ -122,8 +130,15 @@ def build_prompt(media_type: str, language: str, mode: str, duration_seconds: in
             "Не добавляй generic-описания вроде «молодой человек рассказывает», если они не несут пользы."
         )
 
+    is_verbatim_transcription = transcription_type == "verbatim"
+
     if language == "auto":
         lang_instruction = "Сохраняй язык оригинала."
+    elif is_verbatim_transcription:
+        lang_instruction = (
+            f"Примени эту пользовательскую инструкцию к языку и стилю краткого содержания и TL;DR: {language}. "
+            "Поле transcription НЕ переводи и не стилизуй: оно должно остаться на языке оригинальной речи."
+        )
     else:
         lang_instruction = (
             f"Строго примени эту пользовательскую инструкцию к языку и стилю ВСЕГО ответа: {language}. "
@@ -137,6 +152,21 @@ def build_prompt(media_type: str, language: str, mode: str, duration_seconds: in
     if duration_seconds is not None:
         duration_note = f"\nДлина медиа: примерно {duration_seconds} секунд."
 
+    if is_verbatim_transcription:
+        transcription_rules = """Транскрипция:
+- сделай максимально дословную транскрипцию оригинальной речи;
+- не сокращай, не пересказывай, не улучши стиль и не редактируй речь;
+- сохраняй слова-паразиты, междометия, паузы, самопоправки, повторы, обрывы фраз и неидеальную грамматику, если они слышны;
+- сохраняй порядок фраз и формулировки настолько близко к аудио, насколько возможно;
+- поле "transcription" не переводи даже при пользовательской настройке другого языка;
+- если слово неразборчиво, пометь это как [неразборчиво], не выдумывай."""
+    else:
+        transcription_rules = """Транскрипция:
+- сделай чистый, readable текст;
+- убери бесполезные filler-слова, междометия, звуки hesitation и повторы, если они не меняют смысл;
+- сохрани смысл, факты, имена, числа и порядок мыслей;
+- не выдумывай слова, которых нет в медиа."""
+
     common_rules = f"""{task} {lang_instruction}
 {media_instruction}{duration_note}
 
@@ -144,11 +174,9 @@ def build_prompt(media_type: str, language: str, mode: str, duration_seconds: in
 Схема JSON:
 {{"transcription": "...", "summary": "..."}}
 
-Транскрипция:
-- сделай чистый, readable текст;
-- убери бесполезные filler-слова, междометия, звуки hesitation и повторы, если они не меняют смысл;
-- сохрани смысл, факты, имена, числа и порядок мыслей;
-- не выдумывай слова, которых нет в медиа.
+Тип транскрипции: {transcription_type}.
+
+{transcription_rules}
 
 Краткое содержание:
 - масштабируй длину по объёму сообщения: короткое сообщение — 1 предложение, среднее — 2-3 предложения, длинное — до 4-6 предложений;
@@ -741,6 +769,9 @@ def build_help_text(user_id: int) -> str:
         "<b>Язык ответа:</b>\n"
         "/language auto — язык оригинала <i>(по умолчанию)</i>\n"
         "/language ru | en | de | ... — перевести\n\n"
+        "<b>Тип транскрипции:</b>\n"
+        "/transcription_type clean — очищенный readable текст <i>(по умолчанию)</i>\n"
+        "/transcription_type verbatim — дословный оригинал без чистки\n\n"
         "<b>Управление обработкой:</b>\n"
         "/stop — остановить последнюю активную или ожидающую обработку\n"
         "/next — переключить последнюю активную обработку на следующую модель\n\n"
@@ -1054,6 +1085,7 @@ class MediaJob:
     scope_id: int
     mode: str
     language: str
+    transcription_type: str
     chat_id: int
     chat_title: str
     user_id: int
@@ -1762,7 +1794,7 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     scope_type, scope_id = scope_key
 
     if not context.args:
-        _, current_language = STORAGE.get_settings(scope_type, scope_id)
+        _, current_language, _ = STORAGE.get_settings(scope_type, scope_id)
         await update.message.reply_text(
             f"Текущий язык {scope_label}: <code>{current_language}</code>\n\n"
             "Использование: /language auto | ru | en | de | ...",
@@ -1775,6 +1807,67 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     label = "язык оригинала" if language == "auto" else language
     await update.message.reply_text(
         f"✅ Язык ответа {scope_label}: <b>{html.escape(label)}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+def normalize_transcription_type(value: str) -> str | None:
+    normalized = value.strip().lower()
+    aliases = {
+        "clean": "clean",
+        "filtered": "clean",
+        "readable": "clean",
+        "default": "clean",
+        "очищенный": "clean",
+        "чистый": "clean",
+        "verbatim": "verbatim",
+        "original": "verbatim",
+        "full": "verbatim",
+        "raw": "verbatim",
+        "дословный": "verbatim",
+        "оригинал": "verbatim",
+    }
+    return aliases.get(normalized)
+
+
+def transcription_type_label(transcription_type: str) -> str:
+    if transcription_type == "verbatim":
+        return "дословный оригинал"
+    return "очищенный readable текст"
+
+
+async def handle_transcription_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_context(update)
+    scope_key, scope_label = get_settings_scope(update.message)
+    scope_type, scope_id = scope_key
+
+    if not context.args:
+        _, _, current_transcription_type = STORAGE.get_settings(scope_type, scope_id)
+        await update.message.reply_text(
+            f"Текущий тип транскрипции {scope_label}: "
+            f"<b>{html.escape(transcription_type_label(current_transcription_type))}</b>\n\n"
+            "Использование:\n"
+            "/transcription_type clean — очищенный readable текст\n"
+            "/transcription_type verbatim — дословный оригинал без чистки",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    requested_type = normalize_transcription_type(" ".join(context.args))
+    if requested_type is None:
+        await update.message.reply_text(
+            "❌ Не понял тип транскрипции.\n\n"
+            "Использование:\n"
+            "/transcription_type clean — очищенный readable текст\n"
+            "/transcription_type verbatim — дословный оригинал без чистки",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    STORAGE.set_transcription_type(scope_type, scope_id, requested_type)
+    await update.message.reply_text(
+        f"✅ Тип транскрипции {scope_label}: "
+        f"<b>{html.escape(transcription_type_label(requested_type))}</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -2084,7 +2177,7 @@ async def handle_media(
 
     scope_key, _ = get_settings_scope(message)
     scope_type, scope_id = scope_key
-    mode, language = STORAGE.get_settings(scope_type, scope_id)
+    mode, language, transcription_type = STORAGE.get_settings(scope_type, scope_id)
 
     media_meta = get_media_metadata(message, media_type)
     media = media_meta["media"]
@@ -2105,6 +2198,7 @@ async def handle_media(
             scope_id=scope_id,
             mode=mode,
             language=language,
+            transcription_type=transcription_type,
             status="ignored",
             completed_at=utc_now(),
             processing_ms=0,
@@ -2135,6 +2229,7 @@ async def handle_media(
             scope_id=scope_id,
             mode=mode,
             language=language,
+            transcription_type=transcription_type,
             status="rate_limited",
             completed_at=utc_now(),
             processing_ms=0,
@@ -2159,6 +2254,7 @@ async def handle_media(
         scope_id=scope_id,
         mode=mode,
         language=language,
+        transcription_type=transcription_type,
         status="queued",
     )
     job = MediaJob(
@@ -2178,6 +2274,7 @@ async def handle_media(
         scope_id=scope_id,
         mode=mode,
         language=language,
+        transcription_type=transcription_type,
         chat_id=chat_id,
         chat_title=chat_title,
         user_id=user_id,
@@ -2215,7 +2312,13 @@ async def process_media_job(job: MediaJob) -> None:
         data = await file.download_as_bytearray()
         ensure_job_can_continue(job)
         actual_file_size_kb = len(data) // 1024
-        prompt = build_prompt(job.media_type, job.language, job.mode, job.duration_seconds)
+        prompt = build_prompt(
+            job.media_type,
+            job.language,
+            job.mode,
+            job.duration_seconds,
+            job.transcription_type,
+        )
 
         raw, model_used = await call_gemini_with_retries(
             [
@@ -2268,7 +2371,7 @@ async def process_media_job(job: MediaJob) -> None:
         )
 
         logger.info(
-            "✅ %s | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | model=%s | time=%.1fs | text: %s",
+            "✅ %s | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | transcription=%s | model=%s | time=%.1fs | text: %s",
             job.media_type.upper(),
             job.chat_title,
             job.chat_id,
@@ -2278,6 +2381,7 @@ async def process_media_job(job: MediaJob) -> None:
             actual_file_size_kb,
             job.mode,
             job.language,
+            job.transcription_type,
             model_used,
             elapsed_seconds,
             raw.replace("\n", " ")[:300],
@@ -2378,6 +2482,7 @@ def main() -> None:
     app.add_handler(CommandHandler("unblock", handle_unblock))
     app.add_handler(CommandHandler("broadcast_changelog", handle_broadcast_changelog))
     app.add_handler(CommandHandler("language", handle_language))
+    app.add_handler(CommandHandler("transcription_type", handle_transcription_type))
     app.add_handler(CommandHandler("stop", handle_stop))
     app.add_handler(CommandHandler("next", handle_next))
     app.add_handler(CommandHandler("transcription_only", handle_transcription_only))

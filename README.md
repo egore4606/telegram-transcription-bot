@@ -11,6 +11,7 @@ Works in private chats and groups. Settings are scoped separately for personal c
 - Supports **four output modes** per scope: full, transcription only, summary only, TL;DR
 - Stores **separate settings for private chats and groups**
 - Supports **per-scope language setting**: `auto`, `ru`, `en`, `de`, ...
+- Supports **per-scope transcription type**: `clean` readable text or `verbatim` original transcript
 - Uses a **fallback API key** when the primary Gemini key hits quota
 - Uses a **fallback model chain**: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`
 - Requests structured Gemini JSON output with separate `transcription` and `summary` fields
@@ -43,6 +44,7 @@ Works in private chats and groups. Settings are scoped separately for personal c
 | `/summary_only` | Only summary |
 | `/tldr` | One sentence with the main point |
 | `/language [code]` | Set response language: `auto`, `ru`, `en`, `de`, ... |
+| `/transcription_type [clean\|verbatim]` | Set transcript style: cleaned readable text or verbatim original |
 | `/stop` | Cancel your latest active or queued processing job in this chat |
 | `/next` | Force your latest active processing job in this chat to switch to the next Gemini model |
 | `/myid` | Show your Telegram user ID |
@@ -161,6 +163,7 @@ The bot stores persistent state in SQLite. In Docker, the default database path 
 Stored in the database:
 
 - private-chat and per-group settings
+- transcript type settings
 - ignore/block state
 - rate-limit windows
 - daily and per-user stats
@@ -188,6 +191,7 @@ Current migration layout:
 - version `2`: pending feedback state
 - version `3`: changelog broadcast delivery tracking
 - version `4`: command rate limiting and warning throttling
+- version `5`: transcription type setting and processing history field
 
 When adding a new schema change:
 

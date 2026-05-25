@@ -88,11 +88,12 @@ def test_settings_are_saved_per_scope(tmp_path) -> None:
 
     storage.set_mode("user", 1, "summary_only")
     storage.set_language("user", 1, "en")
+    storage.set_transcription_type("user", 1, "verbatim")
     storage.set_mode("chat", -100, "tldr")
     storage.set_language("chat", -100, "ru")
 
-    assert storage.get_settings("user", 1) == ("summary_only", "en")
-    assert storage.get_settings("chat", -100) == ("tldr", "ru")
+    assert storage.get_settings("user", 1) == ("summary_only", "en", "verbatim")
+    assert storage.get_settings("chat", -100) == ("tldr", "ru", "clean")
 
 
 def test_get_stats_snapshot_returns_joined_users_and_stable_order(tmp_path) -> None:

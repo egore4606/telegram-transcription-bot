@@ -41,8 +41,8 @@
           <div class="v">{{ detail.media_type }} · {{ detail.duration_seconds }}s · {{ detail.file_size_kb or "-" }} KB</div>
         </div>
         <div class="kv-item">
-          <div class="k">Mode / Language</div>
-          <div class="v mono">{{ detail.mode }} / {{ detail.language }}</div>
+          <div class="k">Mode / Language / Transcript</div>
+          <div class="v mono">{{ detail.mode }} / {{ detail.language }} / {{ detail.transcription_type or "clean" }}</div>
         </div>
         <div class="kv-item">
           <div class="k">Model Used</div>
