@@ -16,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.error import RetryAfter
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from storage import Storage, utc_now
+from storage import DEFAULT_TRANSCRIPTION_TYPE, Storage, utc_now
 
 
 logging.basicConfig(
@@ -926,6 +926,48 @@ def job_keyboard(job_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def retry_keyboard(message_processing_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔁 Повторить обработку", callback_data=f"retry:{message_processing_id}")]]
+    )
+
+
+def retry_media_runtime(media_type: str, duration_seconds: int) -> dict[str, str]:
+    if media_type == "video":
+        return {
+            "emoji": "🔵",
+            "mime_type": "video/mp4",
+            "progress_text": f"🔵 Смотрю кружочек ({format_duration(duration_seconds)})...",
+        }
+    return {
+        "emoji": "🎙",
+        "mime_type": "audio/ogg",
+        "progress_text": f"🎙 Слушаю голосовое ({format_duration(duration_seconds)})...",
+    }
+
+
+def processing_user_name(processing: dict[str, Any]) -> str:
+    username = processing.get("username")
+    full_name = processing.get("full_name")
+    user_id = processing.get("user_id")
+    if full_name:
+        return str(full_name)
+    if username:
+        return f"@{username}"
+    return str(user_id)
+
+
+def processing_chat_title(processing: dict[str, Any]) -> str:
+    title = processing.get("title")
+    username = processing.get("chat_username")
+    chat_id = processing.get("chat_id")
+    if title:
+        return str(title)
+    if username:
+        return f"@{username}"
+    return str(chat_id)
+
+
 async def safe_edit_text(message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     try:
         await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
@@ -934,16 +976,16 @@ async def safe_edit_text(message, text: str, reply_markup: InlineKeyboardMarkup 
             raise
 
 
-async def safe_reply_text(message, text: str) -> None:
+async def safe_reply_text(message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     try:
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
+        await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         return
     except Exception as error:
         retry_after = get_retry_after_seconds(error)
         if retry_after is None:
             raise
         await asyncio.sleep(retry_after)
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
+        await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 class JobCancelled(Exception):
@@ -1287,19 +1329,23 @@ class JobManager:
 JOB_MANAGER = JobManager()
 
 
-async def deliver_processing_reply(message, text: str | list[str]) -> None:
+async def deliver_processing_reply(
+    message,
+    text: str | list[str],
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
     chunks = [text] if isinstance(text, str) else [chunk for chunk in text if chunk]
     if not chunks:
         chunks = [unknown_internal_error_text()]
 
     first_chunk = chunks[0]
     try:
-        await safe_edit_text(message, first_chunk, reply_markup=None)
+        await safe_edit_text(message, first_chunk, reply_markup=reply_markup)
     except Exception as error:
         retry_after = get_retry_after_seconds(error)
         if retry_after is None:
             logger.warning("FINAL MESSAGE EDIT FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
-            await safe_reply_text(message, first_chunk)
+            await safe_reply_text(message, first_chunk, reply_markup=reply_markup)
         else:
             logger.warning(
                 "FINAL MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
@@ -1308,10 +1354,10 @@ async def deliver_processing_reply(message, text: str | list[str]) -> None:
             )
             await asyncio.sleep(retry_after)
             try:
-                await safe_edit_text(message, first_chunk, reply_markup=None)
+                await safe_edit_text(message, first_chunk, reply_markup=reply_markup)
             except Exception as second_error:
                 logger.warning("FINAL EDIT RETRY FAILED | error=%s", second_error)
-                await safe_reply_text(message, first_chunk)
+                await safe_reply_text(message, first_chunk, reply_markup=reply_markup)
 
     for chunk in chunks[1:]:
         try:
@@ -2134,6 +2180,108 @@ async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(control_result_text(result))
 
 
+async def enqueue_retry_processing(
+    processing: dict[str, Any],
+    context: ContextTypes.DEFAULT_TYPE,
+    processing_message: Any,
+) -> int:
+    media_type = str(processing["media_type"])
+    duration_seconds = int(processing["duration_seconds"])
+    runtime = retry_media_runtime(media_type, duration_seconds)
+    job_id = JOB_MANAGER.allocate_job_id()
+
+    await safe_edit_text(
+        processing_message,
+        "🔁 <b>Повторно запускаю обработку...</b>",
+        reply_markup=job_keyboard(job_id),
+    )
+
+    message_processing_id = STORAGE.create_message_processing(
+        telegram_message_id=int(processing["telegram_message_id"]),
+        chat_id=int(processing["chat_id"]),
+        user_id=int(processing["user_id"]),
+        media_type=media_type,
+        telegram_file_id=str(processing["telegram_file_id"]),
+        duration_seconds=duration_seconds,
+        file_size_kb=processing.get("file_size_kb"),
+        scope_type=str(processing["scope_type"]),
+        scope_id=int(processing["scope_id"]),
+        mode=str(processing["mode"]),
+        language=str(processing["language"]),
+        transcription_type=str(processing.get("transcription_type") or DEFAULT_TRANSCRIPTION_TYPE),
+        status="queued",
+    )
+
+    job = MediaJob(
+        job_id=job_id,
+        context=context,
+        message=None,
+        processing_message=processing_message,
+        media_type=media_type,
+        media_file_id=str(processing["telegram_file_id"]),
+        mime_type=runtime["mime_type"],
+        progress_text=runtime["progress_text"],
+        media_emoji=runtime["emoji"],
+        duration_seconds=duration_seconds,
+        duration_str=format_duration(duration_seconds),
+        file_size_kb=processing.get("file_size_kb"),
+        scope_type=str(processing["scope_type"]),
+        scope_id=int(processing["scope_id"]),
+        mode=str(processing["mode"]),
+        language=str(processing["language"]),
+        transcription_type=str(processing.get("transcription_type") or DEFAULT_TRANSCRIPTION_TYPE),
+        chat_id=int(processing["chat_id"]),
+        chat_title=processing_chat_title(processing),
+        user_id=int(processing["user_id"]),
+        user_name=processing_user_name(processing),
+        message_processing_id=message_processing_id,
+    )
+    await JOB_MANAGER.submit(job)
+    return message_processing_id
+
+
+async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+
+    match = re.fullmatch(r"retry:(\d+)", query.data)
+    if match is None:
+        return
+
+    source_processing_id = int(match.group(1))
+    processing = STORAGE.get_processing_detail(source_processing_id)
+    if processing is None:
+        await query.answer("Не нашёл старую обработку в базе.", show_alert=True)
+        return
+
+    user_id = query.from_user.id if query.from_user is not None else 0
+    if user_id != int(processing["user_id"]) and not is_admin(user_id):
+        await query.answer("Повторить обработку может только отправитель.", show_alert=True)
+        return
+
+    if processing.get("status") != "failed":
+        await query.answer("Эта обработка уже не в статусе ошибки.", show_alert=False)
+        return
+
+    if not processing.get("telegram_file_id"):
+        await query.answer("В базе нет исходного файла для повтора.", show_alert=True)
+        return
+
+    if query.message is None:
+        await query.answer("Не могу обновить это сообщение.", show_alert=True)
+        return
+
+    try:
+        await enqueue_retry_processing(processing, context, query.message)
+    except Exception as error:
+        logger.error("RETRY CALLBACK FAILED | processing_id=%d | error=%s", source_processing_id, error)
+        await query.answer("Не получилось запустить повтор. Попробуй ещё раз.", show_alert=True)
+        return
+
+    await query.answer("Повторная обработка запущена.", show_alert=False)
+
+
 async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query is None or query.data is None:
@@ -2448,7 +2596,11 @@ async def process_media_job(job: MediaJob) -> None:
             elapsed_seconds,
             error,
         )
-        await deliver_processing_reply(job.processing_message, user_error_text)
+        await deliver_processing_reply(
+            job.processing_message,
+            user_error_text,
+            reply_markup=retry_keyboard(job.message_processing_id),
+        )
     finally:
         job.current_model_index = -1
         job.current_model_name = None
@@ -2494,6 +2646,7 @@ def main() -> None:
     app.add_handler(CommandHandler("tldr", handle_tldr))
     app.add_handler(CommandHandler("both", handle_both))
     app.add_handler(CommandHandler("ignore", handle_ignore))
+    app.add_handler(CallbackQueryHandler(handle_retry_callback, pattern=r"^retry:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_job_callback, pattern=r"^job:(stop|next):\d+$"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
