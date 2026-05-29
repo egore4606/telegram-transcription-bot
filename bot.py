@@ -45,11 +45,15 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "5"))  # requests per minute per user
 MODEL_OVERLOAD_RETRY_DELAY = 5
 MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "40"))
+PRIMARY_MODEL_ATTEMPTS = max(1, int(os.environ.get("PRIMARY_MODEL_ATTEMPTS", "1")))
+FALLBACK_MODEL_ATTEMPTS = max(1, int(os.environ.get("FALLBACK_MODEL_ATTEMPTS", "1")))
 PENDING_FEEDBACK_TTL_SECONDS = int(os.environ.get("PENDING_FEEDBACK_TTL_SECONDS", "900"))
 COMMAND_RATE_LIMIT = int(os.environ.get("COMMAND_RATE_LIMIT", "10"))
 COMMAND_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("COMMAND_RATE_LIMIT_WINDOW_SECONDS", "300"))
 MAX_ACTIVE_JOBS_PER_USER = int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "3"))
 MAX_ACTIVE_JOBS_PER_CHAT = int(os.environ.get("MAX_ACTIVE_JOBS_PER_CHAT", "5"))
+PROGRESS_PRIVATE_REFRESH_INTERVAL = max(1.0, float(os.environ.get("PROGRESS_PRIVATE_REFRESH_INTERVAL", "1")))
+PROGRESS_GROUP_REFRESH_INTERVAL = max(3.0, float(os.environ.get("PROGRESS_GROUP_REFRESH_INTERVAL", "5")))
 TELEGRAM_SAFE_MESSAGE_LIMIT = 3800
 TELEGRAM_SECTION_TEXT_LIMIT = 3000
 ADMIN_HISTORY_DEFAULT_LIMIT = 10
@@ -245,6 +249,14 @@ def is_model_overloaded_error(error: Exception) -> bool:
         "model_request_timeout" in err_str
         or
         "503" in str(error)
+        or "500 internal" in err_str
+        or "502" in str(error)
+        or "504" in str(error)
+        or "status': 'internal'" in err_str
+        or '"status": "internal"' in err_str
+        or "internal error encountered" in err_str
+        or "deadline_exceeded" in err_str
+        or "deadline exceeded" in err_str
         or "status': 'unavailable'" in err_str
         or '"status": "unavailable"' in err_str
         or "high demand" in err_str
@@ -844,6 +856,13 @@ def get_retry_after_seconds(error: Exception) -> int | None:
     return None
 
 
+def progress_refresh_interval_for(message) -> float:
+    chat_type = str(getattr(getattr(message, "chat", None), "type", "")).lower()
+    if chat_type in {"group", "supergroup", "channel"}:
+        return PROGRESS_GROUP_REFRESH_INTERVAL
+    return PROGRESS_PRIVATE_REFRESH_INTERVAL
+
+
 def friendly_error(error: Exception) -> str:
     err_str = str(error).lower()
     if is_model_overloaded_error(error):
@@ -947,6 +966,7 @@ class ProcessingProgress:
         self.status_text = initial_status_text
         self.reply_markup = reply_markup
         self.started_monotonic = time.monotonic()
+        self.refresh_interval = progress_refresh_interval_for(message)
         self._last_rendered_text = ""
         self._stop_event = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
@@ -988,21 +1008,13 @@ class ProcessingProgress:
 
     async def handle_flood_control(self, retry_after: int) -> None:
         self._retry_after_until = max(self._retry_after_until, time.monotonic() + retry_after)
-        logger.warning(
-            "PROGRESS MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
-            retry_after,
-            getattr(self.message, "message_id", "unknown"),
-        )
-        if self._flood_notice_sent:
-            return
-        self._flood_notice_sent = True
-        try:
-            await self.message.reply_text(
-                "⏳ Telegram временно ограничил обновление таймера.\n"
-                "Обработка продолжается. Готовый результат я всё равно отправлю, как только лимит спадёт."
+        if not self._flood_notice_sent:
+            logger.warning(
+                "PROGRESS MESSAGE FLOOD CONTROL | retry_after=%ss | message_id=%s",
+                retry_after,
+                getattr(self.message, "message_id", "unknown"),
             )
-        except Exception as notify_error:
-            logger.warning("PROGRESS FLOOD NOTICE FAILED | error=%s", notify_error)
+        self._flood_notice_sent = True
 
     async def run(self) -> None:
         while not self._stop_event.is_set():
@@ -1011,7 +1023,7 @@ class ProcessingProgress:
             except Exception as error:
                 logger.warning("PROGRESS REFRESH ERROR | error=%s", error)
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=1)
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.refresh_interval)
             except asyncio.TimeoutError:
                 continue
 
@@ -1294,14 +1306,6 @@ async def deliver_processing_reply(message, text: str | list[str]) -> None:
                 retry_after,
                 getattr(message, "message_id", "unknown"),
             )
-            try:
-                await message.reply_text(
-                    "⏳ Telegram временно ограничил обновление этого сообщения.\n"
-                    "Подожди немного, я пришлю готовый результат сразу после ограничения."
-                )
-            except Exception as notify_error:
-                logger.warning("FINAL FLOOD NOTICE FAILED | error=%s", notify_error)
-
             await asyncio.sleep(retry_after)
             try:
                 await safe_edit_text(message, first_chunk, reply_markup=None)
@@ -1478,7 +1482,7 @@ async def call_gemini_with_retries(
         if job is not None:
             job.current_model_index = model_index
             job.current_model_name = model_name
-        attempts_for_model = 2 if model_index == 0 else 1
+        attempts_for_model = PRIMARY_MODEL_ATTEMPTS if model_index == 0 else FALLBACK_MODEL_ATTEMPTS
 
         for attempt in range(attempts_for_model):
             ensure_job_can_continue(job)
@@ -1527,7 +1531,7 @@ async def call_gemini_with_retries(
                     error,
                 )
 
-                if model_index == 0 and attempt == 0:
+                if model_index == 0 and attempt + 1 < attempts_for_model:
                     try:
                         await show_overload_countdown(progress, model_name, job)
                         continue
