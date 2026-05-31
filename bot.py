@@ -596,11 +596,8 @@ def parse_structured_response(raw: str) -> tuple[str, str] | None:
             candidates.append(json_slice)
 
     for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, dict):
+        parsed = parse_json_object(candidate)
+        if parsed is None:
             continue
 
         transcription = normalize_model_field(parsed.get("transcription"))
@@ -609,6 +606,24 @@ def parse_structured_response(raw: str) -> tuple[str, str] | None:
             return transcription, summary
 
     return None
+
+
+def parse_json_object(candidate: str) -> dict[str, Any] | None:
+    candidate = candidate.strip()
+    if not candidate:
+        return None
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(candidate)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
 
 
 def normalize_model_field(value: object) -> str:
