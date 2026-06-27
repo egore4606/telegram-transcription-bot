@@ -2334,8 +2334,28 @@ async def handle_media(
     context: ContextTypes.DEFAULT_TYPE,
     media_type: str,
 ) -> None:
-    message = update.message
     remember_context(update)
+    message = update.message
+    if message is None:
+        edited_message = update.edited_message
+        if edited_message is not None:
+            logger.info(
+                "IGNORED EDITED MEDIA UPDATE | media=%s | chat=%s | message_id=%s",
+                media_type,
+                getattr(getattr(edited_message, "chat", None), "id", "unknown"),
+                getattr(edited_message, "message_id", "unknown"),
+            )
+        return
+
+    if message.from_user is None:
+        logger.info(
+            "IGNORED MEDIA WITHOUT USER | media=%s | chat=%s | message_id=%s",
+            media_type,
+            getattr(getattr(message, "chat", None), "id", "unknown"),
+            getattr(message, "message_id", "unknown"),
+        )
+        return
+
     user = message.from_user
     user_id = user.id
     user_name = user.full_name
@@ -2351,6 +2371,22 @@ async def handle_media(
     duration = int(media.duration)
     duration_str = format_duration(duration)
     file_size_kb = int(media.file_size // 1024) if getattr(media, "file_size", None) else None
+
+    if STORAGE.has_message_processing(
+        chat_id=chat_id,
+        telegram_message_id=message.message_id,
+        media_type=media_type,
+    ):
+        logger.info(
+            "DUPLICATE MEDIA UPDATE IGNORED | media=%s | chat=%s (%d) | user=%s (%d) | message_id=%d",
+            media_type,
+            chat_title,
+            chat_id,
+            user_name,
+            user_id,
+            message.message_id,
+        )
+        return
 
     if STORAGE.is_user_ignored(user_id, chat_id):
         STORAGE.create_message_processing(

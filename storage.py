@@ -980,6 +980,29 @@ class Storage:
                 values,
             )
 
+    def has_message_processing(
+        self,
+        *,
+        chat_id: int,
+        telegram_message_id: int,
+        media_type: str | None = None,
+    ) -> bool:
+        query = """
+            SELECT 1
+            FROM message_processing
+            WHERE chat_id = ?
+              AND telegram_message_id = ?
+        """
+        params: list[Any] = [chat_id, telegram_message_id]
+        if media_type is not None:
+            query += " AND media_type = ?"
+            params.append(media_type)
+        query += " LIMIT 1"
+
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return row is not None
+
     def add_model_attempt(
         self,
         *,
