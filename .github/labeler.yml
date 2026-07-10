@@ -1,0 +1,45 @@
+"area: bot":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "bot.py"
+          - "tests/test_bot_helpers.py"
+
+"area: admin-panel":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "admin_panel.py"
+          - "templates/**"
+          - "tests/test_admin_panel.py"
+
+"area: database":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "storage.py"
+          - "tests/test_storage.py"
+
+"area: docker":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Dockerfile"
+          - "docker-compose*.yml"
+          - ".dockerignore"
+          - "save-logs.sh"
+
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - ".github/dependabot.yml"
+          - ".github/labeler.yml"
+          - ".github/labels.json"
+
+"area: documentation":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**"
+
+"area: dependencies":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "requirements*.txt"

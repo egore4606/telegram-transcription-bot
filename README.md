@@ -1,305 +1,222 @@
-# 🎙 Telegram Transcription Bot
+<p align="center">
+  <img src="assets/readme/hero.png" alt="Telegram Transcription Bot — voice and video notes become clear text and summaries" width="100%">
+</p>
 
-Telegram bot that transcribes voice messages and video notes with Google Gemini, then replies in chat with a transcription, a summary, or a one-line TL;DR.
+<h1 align="center">Telegram Transcription Bot</h1>
 
-Works in private chats and groups. Settings are scoped separately for personal chats and each group.
+<p align="center">
+  Turn Telegram voice messages and video notes into readable transcripts, concise summaries,
+  and one-line takeaways with Google Gemini.
+</p>
 
-## Features
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="docs/README.ru.md">Русский</a> ·
+  <a href="docs/README.de.md">Deutsch</a> ·
+  <a href="docs/README.uk.md">Українська</a>
+</p>
 
-- Transcribes **voice messages** (OGG audio)
-- Transcribes **video notes** (circles) and also accounts for the visual part of the video
-- Supports **four output modes** per scope: full, transcription only, summary only, TL;DR
-- Stores **separate settings for private chats and groups**
-- Supports **per-scope language setting**: `auto`, `ru`, `en`, `de`, ...
-- Supports **per-scope transcription type**: `clean` readable text or `verbatim` original transcript
-- Uses a **fallback API key** when the primary Gemini key hits quota
-- Uses a **fallback model chain**: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`
-- Requests structured Gemini JSON output with separate `transcription` and `summary` fields
-- Processes media in background jobs with per-user and per-chat concurrency limits
-- Queues overflow jobs automatically and shows queue position
-- Adds inline **Stop** and **Next model** controls under processing messages
-- Splits long Telegram replies into safe chunks so long voice messages do not fail on message-size limits
-- Shows a live **processing timer** while a voice/video is being handled
-- Persists settings, stats, pending feedback, processed media history, and changelog delivery state in **SQLite**
-- Lets users send **feedback** directly to the admin
-- Syncs the Telegram **command menu automatically on startup**
-- Supports an explicit **admin-only changelog broadcast** command with deduplication per changelog version
-- Adds **admin inspection commands** for recent processing history and recent model errors
-- Supports group-only ignores, global admin blocks, and command anti-spam limits
-- Includes a small **read-only admin panel** for stats, history, errors, and processing details
-- Archives processed voice/video requests and Gemini model attempts in SQLite
-- Saves daily Docker logs to `./logs/` with an **incremental backup script**
-- Runs in **Docker** and survives restarts
+<p align="center">
+  <a href="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/publish-container.yml"><img alt="Container" src="https://github.com/egore4606/telegram-transcription-bot/actions/workflows/publish-container.yml/badge.svg"></a>
+  <a href="https://github.com/egore4606/telegram-transcription-bot/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/egore4606/telegram-transcription-bot?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/egore4606/telegram-transcription-bot/pkgs/container/telegram-transcription-bot"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-container-2496ED?logo=docker&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/egore4606/telegram-transcription-bot"></a>
+</p>
 
-## Commands
+> [!IMPORTANT]
+> This is a self-hosted bot. You provide your own Telegram Bot token and Gemini API key. Never
+> commit either credential to GitHub.
 
-### User Commands
+## Why this bot
 
-| Command | Description |
-|---|---|
-| `/start` | Welcome message |
-| `/help` | Show commands and usage hints |
-| `/both` | Transcription + summary *(default)* |
-| `/transcription_only` | Only verbatim transcription |
-| `/summary_only` | Only summary |
-| `/tldr` | One sentence with the main point |
-| `/language [code]` | Set response language: `auto`, `ru`, `en`, `de`, ... |
-| `/transcription_type [clean\|verbatim]` | Set transcript style: cleaned readable text or verbatim original |
-| `/stop` | Cancel your latest active or queued processing job in this chat |
-| `/next` | Force your latest active processing job in this chat to switch to the next Gemini model |
-| `/myid` | Show your Telegram user ID |
-| `/changelog` | Show the current public changelog |
-| `/feedback` | Bot forwards your next text message from the same chat as feedback for 15 minutes |
-| `/feedback [text]` | Send feedback immediately in one command |
-| `/ignore` | In groups, reply to a user message to toggle ignore for that group *(group admins only)* |
+Voice messages are fast to record but slow to revisit. This bot keeps the convenience of voice
+while returning content that can be searched, quoted, skimmed, and forwarded.
 
-### Admin Commands
+| Input | Output | Context |
+|---|---|---|
+| Telegram voice message | Transcript, summary, or TL;DR | Private chats and groups |
+| Telegram video note | Speech transcript plus relevant visual context | Private chats and groups |
+| Long recording | Safely chunked Telegram replies | Automatic queue and progress updates |
 
-| Command | Description |
-|---|---|
-| `/stats` | Bot stats and runtime info |
-| `/history [N]` | Show recent processing rows from SQLite |
-| `/last_errors [N]` | Show recent failed model attempts |
-| `/block [user_id]` | In admin private chat, block a user globally |
-| `/unblock [user_id]` | In admin private chat, remove global block and all group ignores for a user |
-| `/broadcast_changelog` | Send the current changelog to known private-chat users |
+```mermaid
+flowchart LR
+    A[Voice or video note] --> B[Queue and limits]
+    B --> C[Gemini transcription]
+    C --> D{Selected mode}
+    D --> E[Transcript]
+    D --> F[Summary]
+    D --> G[One-line TL;DR]
+    E --> H[Telegram reply]
+    F --> H
+    G --> H
+    C --> I[(SQLite history)]
+```
 
-The bot publishes these commands to Telegram Bot API automatically on startup:
+## Highlights
 
-- the user command set is synced as the default command menu;
-- the admin chat gets an extended command set with both user and admin commands.
-- if Telegram Bot API command sync fails, the bot logs the error and still continues startup.
+- Four output modes: transcript + summary, transcript only, summary only, or TL;DR.
+- Per-chat language and transcript-style settings.
+- Separate settings for private chats and every group.
+- Background jobs with per-user and per-chat concurrency limits.
+- Queue position, live processing timer, **Stop**, and **Next model** controls.
+- Primary and backup Gemini keys plus a configurable fallback model chain.
+- Safe splitting of long Telegram messages.
+- SQLite-backed settings, statistics, feedback, model attempts, and processing history.
+- Read-only Flask admin panel available through an SSH tunnel.
+- Multi-architecture container images published to GitHub Container Registry.
+- Automated tests, container builds, CodeQL scanning, dependency review, and Dependabot.
 
-## How It Looks
+## Quick start
 
-When someone sends a voice message or a circle, the bot replies with:
-
-> 🎙 **0:42** — John Doe
->
-> 📝 **Transcription:**
-> *(verbatim text — expandable)*
->
-> 📌 **Summary:**
-> *(1–3 sentences; for video notes also describes what is shown)*
-
-While the message is being processed, the bot updates a live timer in place and shows **Stop** / **Next model** buttons. If all active slots are busy, the bot immediately replies with the queue position and starts the job automatically later.
-
-## Requirements
-
-- Telegram Bot token from [@BotFather](https://t.me/BotFather)
-- Google Gemini API key from [aistudio.google.com](https://aistudio.google.com)
-- Docker + Docker Compose
-
-## Setup
+### Docker Compose
 
 ```bash
 git clone https://github.com/egore4606/telegram-transcription-bot.git
 cd telegram-transcription-bot
 cp .env.example .env
-nano .env
+# Edit .env and add your real credentials.
 docker compose up -d --build
 ```
 
+Follow the logs:
+
+```bash
+docker compose logs -f bot
+```
+
+### Pre-built image
+
+```bash
+docker pull ghcr.io/egore4606/telegram-transcription-bot:latest
+cp .env.example .env
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+The image is built for `linux/amd64` and `linux/arm64`. Every main-branch build also receives an
+immutable `sha-<commit>` tag.
+
 ## Configuration
+
+The minimum `.env` file is:
 
 ```env
 TELEGRAM_TOKEN=your_telegram_bot_token
-GEMINI_API_KEY=your_primary_gemini_key
-GEMINI_API_KEY_2=your_backup_gemini_key
+GEMINI_API_KEY=your_primary_gemini_api_key
+ADMIN_USER_ID=123456789
+```
+
+Common optional values:
+
+```env
+GEMINI_API_KEY_2=your_backup_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
 MODEL_REQUEST_TIMEOUT=40
 MAX_ACTIVE_JOBS_PER_USER=3
 MAX_ACTIVE_JOBS_PER_CHAT=5
 DATABASE_PATH=/data/bot.sqlite3
-ADMIN_USER_ID=123456789
-RATE_LIMIT=5
-COMMAND_RATE_LIMIT=10
-COMMAND_RATE_LIMIT_WINDOW_SECONDS=300
 ```
 
-## Pre-built Container Image
+See [Configuration reference](docs/CONFIGURATION.md) for every variable and default.
 
-The repository publishes a multi-platform image to GitHub Container Registry. The `latest` and `main` tags are rebuilt automatically after every push to the `main` branch. Each build also gets an immutable `sha-<commit>` tag.
+## Commands
 
-Pull the current release directly:
+<details>
+<summary><strong>User commands</strong></summary>
+
+| Command | Purpose |
+|---|---|
+| `/start`, `/help` | Welcome and usage help |
+| `/both` | Transcript and summary, the default |
+| `/transcription_only` | Transcript only |
+| `/summary_only` | Summary only |
+| `/tldr` | A single-sentence takeaway |
+| `/language [code]` | `auto`, `ru`, `en`, `de`, and other language codes |
+| `/transcription_type [clean\|verbatim]` | Readable cleanup or verbatim transcript |
+| `/stop` | Cancel the latest active or queued job in this chat |
+| `/next` | Switch the latest active job to the next Gemini model |
+| `/feedback [text]` | Send feedback to the bot administrator |
+| `/changelog` | Show the public changelog |
+| `/myid` | Show your Telegram user ID |
+| `/ignore` | Group admins can toggle a user's access for that group |
+
+</details>
+
+<details>
+<summary><strong>Administrator commands</strong></summary>
+
+| Command | Purpose |
+|---|---|
+| `/stats` | Runtime and usage statistics |
+| `/history [N]` | Recent processing rows |
+| `/last_errors [N]` | Recent Gemini model failures |
+| `/block [user_id]` | Block a user globally |
+| `/unblock [user_id]` | Remove global and group-level blocks |
+| `/broadcast_changelog` | Send the current changelog to known private-chat users |
+
+</details>
+
+The command menus are synchronized with Telegram automatically at startup.
+
+## Groups and privacy
+
+To receive all group messages, either make the bot a group administrator or disable Privacy Mode
+in [@BotFather](https://t.me/BotFather) and re-add the bot.
+
+The bot stores operational state and processed-media history in SQLite. It does not archive normal
+text chat. Queued jobs live only in memory and are not restored after a container restart. Review
+the full [operations and data guide](docs/OPERATIONS.md) before a public deployment.
+
+## Admin panel
+
+The admin panel is intentionally read-only and bound to `127.0.0.1:8081` by Docker Compose. Open it
+through an SSH tunnel:
 
 ```bash
-docker pull ghcr.io/egore4606/telegram-transcription-bot:latest
+ssh -L 8081:127.0.0.1:8081 user@your-server
 ```
 
-To run the complete bot and admin-panel stack without building locally:
+Then visit `http://127.0.0.1:8081`. Do not expose this port directly to the internet.
+
+## Development
 
 ```bash
-cp .env.example .env
-nano .env
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-To update an existing GHCR-based installation:
-
-```bash
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-The image is published by `.github/workflows/publish-container.yml` using GitHub's built-in `GITHUB_TOKEN`; no personal registry password is stored in the repository.
-
-## Usage In Groups
-
-Add the bot to your group. For it to receive all messages, either:
-
-- make it an admin in the group, or
-- disable Privacy Mode in @BotFather and re-add the bot.
-
-`/ignore` is group-local: reply to a user's message with `/ignore` to stop that user from using bot commands, feedback, voice, and video processing in that group only.
-
-`/block` and `/unblock` are admin-only private-chat commands. `/block` disables the user everywhere. `/unblock` removes both the global block and all group-local ignores for that user.
-
-Ordinary users are limited to `10` commands per `5` minutes by default. Admin commands and valid group-admin `/ignore` actions are exempt.
-
-## Logs
-
-Runtime logs stay in Docker and can be backed up into local files with `save-logs.sh`.
-
-- Backup files are written as `./logs/bot-YYYY-MM-DD.log`
-- The script keeps a state file at `./logs/.save-logs-state`
-- On the **first run**, it exports only the **last 24 hours** of Docker logs
-- On later runs, it exports only **new log lines since the previous successful run**
-- Re-running the script on the same day does not duplicate older log lines
-
-Typical usage:
-
-```bash
-./save-logs.sh
-```
-
-## Database
-
-The bot stores persistent state in SQLite. In Docker, the default database path is:
-
-```text
-/data/bot.sqlite3
-```
-
-Stored in the database:
-
-- private-chat and per-group settings
-- transcript type settings
-- ignore/block state
-- rate-limit windows
-- daily and per-user stats
-- processed voice/video request history
-- Gemini model attempt history for each processed message
-- pending feedback state
-- changelog delivery records
-
-Only media the bot actually processes is archived. Regular text chat messages are not copied into the database, except operational state needed for the bot itself, such as feedback flow and private/group context tracking.
-
-Queued jobs are kept in memory only. If the container restarts, the queue itself is not restored, but permanent processing history remains in SQLite.
-
-## Database Migrations
-
-SQLite schema changes are handled by an internal sequential migration system in `storage.py`.
-
-- `schema_version` stores the applied schema version
-- `Storage.init_db()` applies missing migrations in order
-- Empty databases are created from scratch and migrated to the latest version automatically
-- Existing older databases are upgraded in place
-
-Current migration layout:
-
-- version `1`: initial persistent bot schema
-- version `2`: pending feedback state
-- version `3`: changelog broadcast delivery tracking
-- version `4`: command rate limiting and warning throttling
-- version `5`: transcription type setting and processing history field
-
-When adding a new schema change:
-
-1. Add a new migration SQL block or function in `storage.py`
-2. Append it to the ordered migration map with the next integer version
-3. Bump `LATEST_SCHEMA_VERSION`
-4. Add or update tests that cover the new schema behavior
-
-## Changelog Broadcast
-
-Changelog broadcast is **manual by design**. It is not sent automatically on every restart.
-
-To broadcast the current changelog:
-
-1. Update `PUBLIC_CHANGELOG_TEXT` in `bot.py`
-2. Bump `PUBLIC_CHANGELOG_VERSION` in `bot.py`
-3. Run `/broadcast_changelog` from the admin account
-
-The bot records which `PUBLIC_CHANGELOG_VERSION` was already sent to which private-chat user, so the same release is not re-sent to the same person by accident.
-
-## Admin Panel
-
-The project includes a small read-only admin panel for operational inspection.
-
-What it shows:
-
-- dashboard with high-level stats
-- recent processing history
-- recent failed model attempts
-- detail page for one processing row, including attempts and saved outputs
-
-Security model:
-
-- the panel runs as a separate Docker service
-- it opens SQLite in **read-only connection mode**
-- it is published only on `127.0.0.1:8081` on the server
-- it is intended to be opened through SSH port forwarding, not exposed publicly
-
-Example SSH tunnel from your main computer:
-
-```bash
-ssh -L 8081:127.0.0.1:8081 root@your-server
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8081
-```
-
-The panel is intentionally operational and minimal. It does not provide write actions.
-
-## Tests
-
-Install dev dependencies:
-
-```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q
+ruff check --select E9,F63,F7,F82 .
 ```
 
-Run the test suite locally without Telegram or Gemini network calls:
+Tests use mocks and do not call Telegram or Gemini. The same test, lint, compile, and container-build
+checks run automatically on every pull request.
 
-```bash
-python -m pytest
-```
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security vulnerabilities
+must be reported privately according to [SECURITY.md](SECURITY.md).
 
-The tests cover:
+## Releases and automation
 
-- Gemini response parsing and formatting
-- prompt building
-- feedback pending state
-- stats aggregation and joins with `users`
-- rate limiting
-- model attempt persistence order
-- settings scope separation
-- SQLite migration behavior
-- changelog delivery deduplication
+- A `vX.Y.Z` tag creates a GitHub release with generated notes.
+- The same tag publishes semantic-version container tags to GHCR.
+- Pull requests receive automatic area and size labels.
+- Dependabot groups routine dependency updates to reduce noise.
+- Codex Code Review can be requested with `@codex review` after it is enabled for the repository.
 
-## Tech Stack
+See [operations and release guide](docs/OPERATIONS.md) for the exact release process.
 
-- Python 3.12
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
-- [google-genai](https://pypi.org/project/google-genai/)
-- SQLite
-- Docker + Docker Compose
+## Contributors
+
+<a href="https://github.com/egore4606/telegram-transcription-bot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=egore4606/telegram-transcription-bot" alt="Project contributors">
+</a>
+
+## Star history
+
+<a href="https://star-history.com/#egore4606/telegram-transcription-bot&Date">
+  <img src="https://api.star-history.com/svg?repos=egore4606/telegram-transcription-bot&type=Date" alt="Star history chart">
+</a>
 
 ## License
 
-MIT
+Released under the [MIT License](LICENSE).

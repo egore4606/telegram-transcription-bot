@@ -269,7 +269,7 @@ def test_get_retry_after_seconds_from_retry_after_error() -> None:
     assert bot.get_retry_after_seconds(RetryAfter(24)) == 24
 
 
-def test_processing_progress_handles_flood_control_without_crashing() -> None:
+def test_processing_progress_backs_off_after_flood_control_without_replying() -> None:
     message = Mock()
     message.message_id = 777
     message.edit_text = AsyncMock(side_effect=RetryAfter(24))
@@ -280,10 +280,12 @@ def test_processing_progress_handles_flood_control_without_crashing() -> None:
     asyncio.run(progress.refresh())
 
     assert message.edit_text.await_count == 1
-    assert message.reply_text.await_count == 1
+    assert message.reply_text.await_count == 0
+    assert progress._flood_notice_sent is True
+    assert progress._retry_after_until > 0
 
 
-def test_deliver_processing_reply_retries_after_flood(monkeypatch) -> None:
+def test_deliver_processing_reply_retries_edit_after_flood(monkeypatch) -> None:
     sleep_calls = []
 
     async def fake_sleep(delay: float) -> None:
@@ -299,7 +301,7 @@ def test_deliver_processing_reply_retries_after_flood(monkeypatch) -> None:
     asyncio.run(bot.deliver_processing_reply(message, "<b>done</b>"))
 
     assert message.edit_text.await_count == 2
-    assert message.reply_text.await_count == 1
+    assert message.reply_text.await_count == 0
     assert sleep_calls == [3]
 
 
