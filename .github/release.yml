@@ -1,0 +1,25 @@
+changelog:
+  exclude:
+    labels:
+      - "release: skip"
+    authors:
+      - dependabot
+  categories:
+    - title: "🚨 Breaking changes"
+      labels:
+        - "release: breaking"
+    - title: "✨ Features"
+      labels:
+        - "type: feature"
+    - title: "🐛 Bug fixes"
+      labels:
+        - "type: bug"
+    - title: "📚 Documentation"
+      labels:
+        - "type: docs"
+    - title: "🧰 Maintenance"
+      labels:
+        - "type: maintenance"
+    - title: "Other changes"
+      labels:
+        - "*"

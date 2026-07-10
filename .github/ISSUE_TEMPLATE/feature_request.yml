@@ -1,0 +1,55 @@
+name: "✨ Feature request"
+description: Suggest an improvement to the bot, admin panel, or project tooling
+title: "[Feature]: "
+labels:
+  - "type: feature"
+  - "status: needs-triage"
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: The request does not contain credentials or private user data.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or user need should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior from a user's perspective.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or different approaches did you consider?
+  - type: dropdown
+    id: component
+    attributes:
+      label: Area
+      options:
+        - Telegram bot
+        - Transcription and summaries
+        - Admin panel
+        - Storage and statistics
+        - Docker and deployment
+        - Documentation and translations
+        - GitHub automation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups or examples are welcome if they contain no private data.
