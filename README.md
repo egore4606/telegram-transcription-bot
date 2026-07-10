@@ -117,11 +117,33 @@ COMMAND_RATE_LIMIT=10
 COMMAND_RATE_LIMIT_WINDOW_SECONDS=300
 ```
 
-Or use the pre-built image:
+## Pre-built Container Image
+
+The repository publishes a multi-platform image to GitHub Container Registry. The `latest` and `main` tags are rebuilt automatically after every push to the `main` branch. Each build also gets an immutable `sha-<commit>` tag.
+
+Pull the current release directly:
 
 ```bash
 docker pull ghcr.io/egore4606/telegram-transcription-bot:latest
 ```
+
+To run the complete bot and admin-panel stack without building locally:
+
+```bash
+cp .env.example .env
+nano .env
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+To update an existing GHCR-based installation:
+
+```bash
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+The image is published by `.github/workflows/publish-container.yml` using GitHub's built-in `GITHUB_TOKEN`; no personal registry password is stored in the repository.
 
 ## Usage In Groups
 
