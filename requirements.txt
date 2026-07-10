@@ -1,4 +1,4 @@
-python-telegram-bot==21.*
+python-telegram-bot==22.*
 google-genai==1.*
 Flask==3.*
 waitress==3.*
