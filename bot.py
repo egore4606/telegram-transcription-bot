@@ -71,7 +71,24 @@ gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
 if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
 
-GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(response_mime_type="application/json")
+GEMINI_RESPONSE_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "transcription": {
+            "type": "string",
+            "description": "Full transcription of the voice message or video note.",
+        },
+        "summary": {
+            "type": "string",
+            "description": "Concise summary of the message.",
+        },
+    },
+    "required": ["transcription", "summary"],
+}
+GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(
+    response_mime_type="application/json",
+    response_json_schema=GEMINI_RESPONSE_JSON_SCHEMA,
+)
 STORAGE = Storage(DATABASE_PATH)
 PUBLIC_CHANGELOG_VERSION = "2026-05-25-2"
 
@@ -641,8 +658,11 @@ def parse_structured_response(raw: str) -> tuple[str, str] | None:
         if parsed is None:
             continue
 
-        transcription = normalize_model_field(parsed.get("transcription"))
-        summary = normalize_model_field(parsed.get("summary"))
+        normalized_keys = {str(key).strip().casefold(): value for key, value in parsed.items()}
+        transcription = normalize_model_field(
+            normalized_keys.get("transcription", normalized_keys.get("transcript"))
+        )
+        summary = normalize_model_field(normalized_keys.get("summary"))
         if transcription or summary:
             return transcription, summary
 
@@ -660,11 +680,52 @@ def parse_json_object(candidate: str) -> dict[str, Any] | None:
         try:
             parsed, _ = json.JSONDecoder().raw_decode(candidate)
         except json.JSONDecodeError:
-            return None
+            repaired = repair_truncated_json_object(candidate)
+            if repaired is None:
+                return None
+            try:
+                parsed = json.loads(repaired)
+            except json.JSONDecodeError:
+                return None
 
-    if not isinstance(parsed, dict):
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+        return parsed[0]
+    return None
+
+
+def repair_truncated_json_object(candidate: str) -> str | None:
+    """Close an otherwise complete JSON object that only lost trailing braces."""
+    candidate = candidate.strip()
+    if not candidate.startswith("{"):
         return None
-    return parsed
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in candidate:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth < 0:
+                return None
+
+    if in_string or depth <= 0:
+        return None
+    return candidate + ("}" * depth)
 
 
 def normalize_model_field(value: object) -> str:
@@ -1056,6 +1117,10 @@ class JobCancelled(Exception):
 
 
 class NextModelRequested(Exception):
+    pass
+
+
+class InvalidStructuredResponse(Exception):
     pass
 
 
@@ -1458,6 +1523,11 @@ async def call_gemini(
                 )
             )
             response = await wait_for_model_response(generation_task, job)
+            raw_response = response.text or ""
+            if parse_structured_response(raw_response) is None:
+                raise InvalidStructuredResponse(
+                    f"invalid_structured_response from {model_name}: response did not match the required schema"
+                )
             completed_at = utc_now()
             STORAGE.add_model_attempt(
                 message_processing_id=message_processing_id,
@@ -1471,7 +1541,7 @@ async def call_gemini(
             run_meta["attempt_no"] = attempt_no + 1
             if client_index > 0:
                 run_meta["fallback_key_used"] = True
-            return response.text or ""
+            return raw_response
         except JobCancelled as error:
             completed_at = utc_now()
             STORAGE.add_model_attempt(
@@ -1627,6 +1697,15 @@ async def call_gemini_with_retries(
                     break
 
                 raise
+            except InvalidStructuredResponse as error:
+                last_error = error
+                logger.warning(
+                    "Invalid structured response | model=%s | attempt=%d/%d",
+                    model_name,
+                    attempt + 1,
+                    attempts_for_model,
+                )
+                break
             except Exception as error:
                 last_error = error
 

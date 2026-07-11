@@ -16,3 +16,8 @@ project intends to use semantic version tags for public releases.
 ### Changed
 
 - Container publication is gated by the same quality checks used for pull requests.
+
+### Fixed
+
+- Gemini responses now use an enforced JSON schema, and truncated structured responses no longer
+  appear as raw JSON inside the transcription block.
