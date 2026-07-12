@@ -39,9 +39,14 @@ with your Gemini account and update the chain in `bot.py` when Google deprecates
 | `COMMAND_RATE_LIMIT_WINDOW_SECONDS` | `300` | Command rate-limit window in seconds. |
 | `MAX_ACTIVE_JOBS_PER_USER` | `3` | Concurrent active media jobs for one user. |
 | `MAX_ACTIVE_JOBS_PER_CHAT` | `5` | Concurrent active media jobs for one private chat or group. |
+| `MAX_ACTIVE_JOBS_GLOBAL` | `5` | Maximum concurrent media jobs across the whole bot process. |
+| `MAX_QUEUED_JOBS` | `25` | Maximum number of jobs waiting in the in-memory queue. |
+| `MAX_QUEUED_JOBS_PER_USER` | `5` | Maximum queued jobs belonging to one user. |
+| `MAX_MEDIA_BYTES` | `20971520` | Maximum accepted media size in bytes (20 MiB by default). |
 
-Overflow jobs are queued in memory. Restarting the process clears the queue but does not delete
-the permanent SQLite processing history.
+Overflow jobs are queued in memory until either the global or per-user queue limit is reached.
+New jobs are rejected with a user-facing message when the queue is full. Restarting the process
+clears the queue but does not delete the permanent SQLite processing history.
 
 ## Progress updates
 
