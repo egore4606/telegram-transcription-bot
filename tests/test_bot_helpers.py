@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import bot
@@ -295,6 +296,116 @@ def test_friendly_error_unknown_suggests_feedback() -> None:
 
 def test_get_retry_after_seconds_from_retry_after_error() -> None:
     assert bot.get_retry_after_seconds(RetryAfter(24)) == 24
+
+
+def test_quota_error_uses_structured_code_and_precise_fallbacks() -> None:
+    structured_error = RuntimeError("request failed")
+    structured_error.code = 429
+
+    assert bot.is_quota_error(structured_error) is True
+    assert bot.is_quota_error(RuntimeError("rate limit exceeded")) is True
+    assert bot.is_quota_error(RuntimeError("generate_content failed")) is False
+
+
+def test_media_size_limit_checks_known_and_actual_sizes(monkeypatch) -> None:
+    monkeypatch.setattr(bot, "MAX_MEDIA_BYTES", 100)
+
+    assert bot.is_media_too_large(None) is False
+    assert bot.is_media_too_large(100) is False
+    assert bot.is_media_too_large(101) is True
+
+
+def test_job_manager_enforces_global_and_queue_limits(monkeypatch) -> None:
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_GLOBAL", 2)
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_PER_USER", 2)
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_PER_CHAT", 2)
+    monkeypatch.setattr(bot, "MAX_QUEUED_JOBS", 1)
+    monkeypatch.setattr(bot, "MAX_QUEUED_JOBS_PER_USER", 1)
+
+    manager = bot.JobManager()
+    manager._start_job = lambda job: setattr(job, "status", "active")
+
+    def job(job_id: int, user_id: int, chat_id: int):
+        return SimpleNamespace(job_id=job_id, user_id=user_id, chat_id=chat_id, status="new")
+
+    async def scenario() -> None:
+        assert await manager.submit(job(1, 1, 101)) == "started"
+        assert await manager.submit(job(2, 2, 102)) == "started"
+        assert await manager.submit(job(3, 3, 103)) == "queued"
+        assert await manager.submit(job(4, 4, 104)) == "rejected"
+
+    asyncio.run(scenario())
+    assert len(manager.active_jobs) == 2
+    assert len(manager.queue) == 1
+
+
+def test_job_manager_enforces_per_user_queue_limit(monkeypatch) -> None:
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_GLOBAL", 1)
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_PER_USER", 1)
+    monkeypatch.setattr(bot, "MAX_ACTIVE_JOBS_PER_CHAT", 1)
+    monkeypatch.setattr(bot, "MAX_QUEUED_JOBS", 5)
+    monkeypatch.setattr(bot, "MAX_QUEUED_JOBS_PER_USER", 1)
+
+    manager = bot.JobManager()
+    manager._start_job = lambda job: setattr(job, "status", "active")
+
+    async def scenario() -> None:
+        active = SimpleNamespace(job_id=1, user_id=1, chat_id=101, status="new")
+        queued = SimpleNamespace(job_id=2, user_id=2, chat_id=102, status="new")
+        rejected = SimpleNamespace(job_id=3, user_id=2, chat_id=103, status="new")
+        assert await manager.submit(active) == "started"
+        assert await manager.submit(queued) == "queued"
+        assert await manager.submit(rejected) == "rejected"
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_model_response_cancels_underlying_async_request() -> None:
+    async def scenario() -> None:
+        request_was_cancelled = asyncio.Event()
+
+        async def request():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                request_was_cancelled.set()
+
+        generation_task = asyncio.create_task(request())
+        await asyncio.sleep(0)
+        job = SimpleNamespace(cancel_event=asyncio.Event(), next_model_event=asyncio.Event())
+        job.cancel_event.set()
+
+        with pytest.raises(bot.JobCancelled):
+            await bot.wait_for_model_response(generation_task, job)
+
+        assert generation_task.cancelled()
+        assert request_was_cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_call_gemini_uses_async_sdk_client(monkeypatch) -> None:
+    generate_content = AsyncMock(
+        return_value=SimpleNamespace(text='{"transcription":"Text","summary":"Summary"}')
+    )
+    async_client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    storage = Mock()
+    monkeypatch.setattr(bot, "gemini_async_clients", [async_client])
+    monkeypatch.setattr(bot, "STORAGE", storage)
+
+    run_meta = {"attempt_no": 1, "models_tried": [], "fallback_key_used": False}
+    result = asyncio.run(
+        bot.call_gemini(
+            contents=["media"],
+            model_name="test-model",
+            message_processing_id=7,
+            run_meta=run_meta,
+        )
+    )
+
+    assert result == '{"transcription":"Text","summary":"Summary"}'
+    generate_content.assert_awaited_once()
+    storage.add_model_attempt.assert_called_once()
 
 
 def test_processing_progress_backs_off_after_flood_control_without_replying() -> None:

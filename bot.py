@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from google import genai
-from google.genai import types
+from google.genai import errors as genai_errors, types
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter
@@ -50,8 +50,12 @@ FALLBACK_MODEL_ATTEMPTS = max(1, int(os.environ.get("FALLBACK_MODEL_ATTEMPTS", "
 PENDING_FEEDBACK_TTL_SECONDS = int(os.environ.get("PENDING_FEEDBACK_TTL_SECONDS", "900"))
 COMMAND_RATE_LIMIT = int(os.environ.get("COMMAND_RATE_LIMIT", "10"))
 COMMAND_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("COMMAND_RATE_LIMIT_WINDOW_SECONDS", "300"))
-MAX_ACTIVE_JOBS_PER_USER = int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "3"))
-MAX_ACTIVE_JOBS_PER_CHAT = int(os.environ.get("MAX_ACTIVE_JOBS_PER_CHAT", "5"))
+MAX_ACTIVE_JOBS_PER_USER = max(1, int(os.environ.get("MAX_ACTIVE_JOBS_PER_USER", "3")))
+MAX_ACTIVE_JOBS_PER_CHAT = max(1, int(os.environ.get("MAX_ACTIVE_JOBS_PER_CHAT", "5")))
+MAX_ACTIVE_JOBS_GLOBAL = max(1, int(os.environ.get("MAX_ACTIVE_JOBS_GLOBAL", "5")))
+MAX_QUEUED_JOBS = max(0, int(os.environ.get("MAX_QUEUED_JOBS", "25")))
+MAX_QUEUED_JOBS_PER_USER = max(0, int(os.environ.get("MAX_QUEUED_JOBS_PER_USER", "5")))
+MAX_MEDIA_BYTES = max(1, int(os.environ.get("MAX_MEDIA_BYTES", str(20 * 1024 * 1024))))
 PROGRESS_PRIVATE_REFRESH_INTERVAL = max(1.0, float(os.environ.get("PROGRESS_PRIVATE_REFRESH_INTERVAL", "1")))
 PROGRESS_GROUP_REFRESH_INTERVAL = max(3.0, float(os.environ.get("PROGRESS_GROUP_REFRESH_INTERVAL", "5")))
 TELEGRAM_SAFE_MESSAGE_LIMIT = 3800
@@ -70,6 +74,7 @@ for model_name in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
 gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
 if GEMINI_API_KEY_2:
     gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
+gemini_async_clients = [client.aio for client in gemini_clients]
 
 GEMINI_RESPONSE_JSON_SCHEMA = {
     "type": "object",
@@ -293,11 +298,21 @@ def extract_section(raw: str, start_label: str, end_labels: tuple[str, ...]) -> 
 
 def is_quota_error(error: Exception) -> bool:
     err_str = str(error).lower()
+    error_code = getattr(error, "code", None)
+    error_status = str(getattr(error, "status", "")).lower()
+
+    if isinstance(error, genai_errors.APIError) and error_code == 429:
+        return True
+    if error_code == 429 or error_status == "resource_exhausted":
+        return True
+
     return (
-        "429" in str(error)
-        or "quota" in err_str
-        or "rate" in err_str
+        "quota" in err_str
         or "resource_exhausted" in err_str
+        or "resource exhausted" in err_str
+        or "rate limit" in err_str
+        or "rate_limit" in err_str
+        or "too many requests" in err_str
     )
 
 
@@ -325,6 +340,8 @@ def is_model_overloaded_error(error: Exception) -> bool:
 
 def extract_error_code(error: Exception) -> str:
     err_str = str(error).lower()
+    if isinstance(error, MediaTooLarge):
+        return "file_too_large"
     if "model_request_timeout" in err_str:
         return "model_request_timeout"
     if is_model_overloaded_error(error):
@@ -336,6 +353,16 @@ def extract_error_code(error: Exception) -> str:
     if "invalid" in err_str or "unsupported" in err_str:
         return "invalid_media"
     return "unknown_error"
+
+
+def media_size_limit_text() -> str:
+    max_megabytes = MAX_MEDIA_BYTES / (1024 * 1024)
+    formatted_limit = f"{max_megabytes:g}"
+    return f"❌ Файл слишком большой. Максимальный размер: {formatted_limit} МБ."
+
+
+def is_media_too_large(file_size_bytes: int | None) -> bool:
+    return file_size_bytes is not None and file_size_bytes > MAX_MEDIA_BYTES
 
 
 def shorten_error(error: Exception, limit: int = 1000) -> str:
@@ -946,6 +973,16 @@ async def post_init(app: Application) -> None:
     await sync_bot_commands(app)
 
 
+async def post_shutdown(app: Application) -> None:
+    results = await asyncio.gather(
+        *(client.aclose() for client in gemini_async_clients),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("GEMINI CLIENT CLOSE ERROR | error=%s", result)
+
+
 def feedback_hint_text() -> str:
     return (
         "Если проблема повторится, отправь <code>/feedback</code>, "
@@ -982,6 +1019,8 @@ def progress_refresh_interval_for(message) -> float:
 
 def friendly_error(error: Exception) -> str:
     err_str = str(error).lower()
+    if isinstance(error, MediaTooLarge):
+        return media_size_limit_text()
     if is_model_overloaded_error(error):
         tried_models = " → ".join(GEMINI_MODEL_CHAIN)
         return (
@@ -992,7 +1031,7 @@ def friendly_error(error: Exception) -> str:
     if is_quota_error(error):
         return "⏳ Превышен лимит запросов к Gemini. Оба ключа исчерпаны. Попробуй через минуту."
     if "too large" in err_str or "file_too_large" in err_str or "size" in err_str:
-        return "❌ Файл слишком большой (макс. 20 МБ)."
+        return media_size_limit_text()
     if "invalid" in err_str or "unsupported" in err_str:
         return "❌ Формат файла не поддерживается."
     return unknown_internal_error_text()
@@ -1121,6 +1160,10 @@ class NextModelRequested(Exception):
 
 
 class InvalidStructuredResponse(Exception):
+    pass
+
+
+class MediaTooLarge(Exception):
     pass
 
 
@@ -1291,6 +1334,10 @@ def queued_job_text(position: int) -> str:
     )
 
 
+def queue_full_text() -> str:
+    return "⏳ Сейчас очередь обработки заполнена. Попробуй отправить сообщение немного позже."
+
+
 def cancelled_job_text() -> str:
     return "⏹ <b>Обработка остановлена.</b>"
 
@@ -1310,27 +1357,39 @@ class JobManager:
     def _has_capacity_locked(self, job: MediaJob) -> bool:
         user_active = sum(1 for active_job in self.active_jobs.values() if active_job.user_id == job.user_id)
         chat_active = sum(1 for active_job in self.active_jobs.values() if active_job.chat_id == job.chat_id)
-        return user_active < MAX_ACTIVE_JOBS_PER_USER and chat_active < MAX_ACTIVE_JOBS_PER_CHAT
+        return (
+            len(self.active_jobs) < MAX_ACTIVE_JOBS_GLOBAL
+            and user_active < MAX_ACTIVE_JOBS_PER_USER
+            and chat_active < MAX_ACTIVE_JOBS_PER_CHAT
+        )
+
+    def _has_queue_capacity_locked(self, job: MediaJob) -> bool:
+        user_queued = sum(1 for queued_job in self.queue if queued_job.user_id == job.user_id)
+        return len(self.queue) < MAX_QUEUED_JOBS and user_queued < MAX_QUEUED_JOBS_PER_USER
 
     def _start_job(self, job: MediaJob) -> None:
         job.status = "active"
         job.task = asyncio.create_task(process_media_job(job))
 
-    async def submit(self, job: MediaJob) -> None:
+    async def submit(self, job: MediaJob) -> str:
         should_start = False
         async with self._lock:
             if self._has_capacity_locked(job):
                 self.active_jobs[job.job_id] = job
                 should_start = True
-            else:
+            elif self._has_queue_capacity_locked(job):
                 self.queue.append(job)
                 job.status = "queued"
+            else:
+                job.status = "rejected"
+                return "rejected"
 
         if should_start:
             self._start_job(job)
-            return
+            return "started"
 
         await self.refresh_queue_positions()
+        return "queued"
 
     async def finish(self, job: MediaJob) -> None:
         jobs_to_start: list[MediaJob] = []
@@ -1495,6 +1554,25 @@ async def deliver_processing_reply(
             logger.warning("FOLLOW-UP RESULT MESSAGE FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
 
 
+async def submit_media_job(job: MediaJob) -> str:
+    result = await JOB_MANAGER.submit(job)
+    if result != "rejected":
+        return result
+
+    rejection_text = queue_full_text()
+    STORAGE.update_message_processing(
+        job.message_processing_id,
+        status="failed",
+        completed_at=utc_now(),
+        processing_ms=0,
+        final_reply_text=rejection_text,
+        error_code="queue_full",
+        error_text="Global or per-user queue limit reached",
+    )
+    await deliver_processing_reply(job.processing_message, rejection_text)
+    return result
+
+
 # ── Gemini call with fallback ─────────────────────────────────────────────────
 
 
@@ -1507,7 +1585,7 @@ async def call_gemini(
 ) -> str:
     last_error = None
 
-    for client_index, client in enumerate(gemini_clients):
+    for client_index, client in enumerate(gemini_async_clients):
         ensure_job_can_continue(job)
         api_key_slot = "primary" if client_index == 0 else "backup"
         attempt_no = int(run_meta["attempt_no"])
@@ -1515,8 +1593,7 @@ async def call_gemini(
 
         try:
             generation_task = asyncio.create_task(
-                asyncio.to_thread(
-                    client.models.generate_content,
+                client.models.generate_content(
                     model=model_name,
                     contents=contents,
                     config=GEMINI_GENERATION_CONFIG,
@@ -1610,7 +1687,7 @@ async def call_gemini(
             if client_index > 0:
                 run_meta["fallback_key_used"] = True
 
-            if is_quota_error(error) and client_index < len(gemini_clients) - 1:
+            if is_quota_error(error) and client_index < len(gemini_async_clients) - 1:
                 logger.warning("Client %d quota exceeded, switching to backup key", client_index + 1)
                 last_error = error
                 continue
@@ -1635,18 +1712,22 @@ async def wait_for_model_response(generation_task: asyncio.Task, job: MediaJob |
         )
         if job.cancel_event.is_set():
             generation_task.cancel()
+            await asyncio.gather(generation_task, return_exceptions=True)
             raise JobCancelled("job_cancelled")
         if job.next_model_event.is_set():
             generation_task.cancel()
+            await asyncio.gather(generation_task, return_exceptions=True)
             raise NextModelRequested("next_model_requested")
         if generation_task in done:
             return await generation_task
 
         generation_task.cancel()
+        await asyncio.gather(generation_task, return_exceptions=True)
         raise asyncio.TimeoutError
     finally:
         cancel_task.cancel()
         next_task.cancel()
+        await asyncio.gather(cancel_task, next_task, return_exceptions=True)
 
 
 async def call_gemini_with_retries(
@@ -2327,7 +2408,7 @@ async def enqueue_retry_processing(
     processing: dict[str, Any],
     context: ContextTypes.DEFAULT_TYPE,
     processing_message: Any,
-) -> int:
+) -> str:
     media_type = str(processing["media_type"])
     duration_seconds = int(processing["duration_seconds"])
     runtime = retry_media_runtime(media_type, duration_seconds)
@@ -2380,8 +2461,7 @@ async def enqueue_retry_processing(
         user_username=processing_user_username(processing),
         message_processing_id=message_processing_id,
     )
-    await JOB_MANAGER.submit(job)
-    return message_processing_id
+    return await submit_media_job(job)
 
 
 async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2417,13 +2497,16 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
-        await enqueue_retry_processing(processing, context, query.message)
+        submit_result = await enqueue_retry_processing(processing, context, query.message)
     except Exception as error:
         logger.error("RETRY CALLBACK FAILED | processing_id=%d | error=%s", source_processing_id, error)
         await query.answer("Не получилось запустить повтор. Попробуй ещё раз.", show_alert=True)
         return
 
-    await query.answer("Повторная обработка запущена.", show_alert=False)
+    if submit_result == "rejected":
+        await query.answer("Очередь заполнена. Попробуй немного позже.", show_alert=True)
+    else:
+        await query.answer("Повторная обработка запущена.", show_alert=False)
 
 
 async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2500,7 +2583,8 @@ async def handle_media(
     media = media_meta["media"]
     duration = int(media.duration)
     duration_str = format_duration(duration)
-    file_size_kb = int(media.file_size // 1024) if getattr(media, "file_size", None) else None
+    file_size_bytes = int(media.file_size) if getattr(media, "file_size", None) is not None else None
+    file_size_kb = file_size_bytes // 1024 if file_size_bytes is not None else None
 
     if STORAGE.has_message_processing(
         chat_id=chat_id,
@@ -2546,6 +2630,31 @@ async def handle_media(
             user_name,
             user_id,
         )
+        return
+
+    if is_media_too_large(file_size_bytes):
+        rejection_text = media_size_limit_text()
+        STORAGE.create_message_processing(
+            telegram_message_id=message.message_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            media_type=media_type,
+            telegram_file_id=media.file_id,
+            duration_seconds=duration,
+            file_size_kb=file_size_kb,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            mode=mode,
+            language=language,
+            transcription_type=transcription_type,
+            status="failed",
+            completed_at=utc_now(),
+            processing_ms=0,
+            final_reply_text=rejection_text,
+            error_code="file_too_large",
+            error_text=f"Known media size {file_size_bytes} exceeds {MAX_MEDIA_BYTES} bytes",
+        )
+        await message.reply_text(rejection_text)
         return
 
     if not is_admin(user_id) and not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
@@ -2615,7 +2724,7 @@ async def handle_media(
         user_username=user_username,
         message_processing_id=message_processing_id,
     )
-    await JOB_MANAGER.submit(job)
+    await submit_media_job(job)
 
 
 async def process_media_job(job: MediaJob) -> None:
@@ -2641,10 +2750,15 @@ async def process_media_job(job: MediaJob) -> None:
 
     try:
         ensure_job_can_continue(job)
+        known_file_size_bytes = job.file_size_kb * 1024 if job.file_size_kb is not None else None
+        if is_media_too_large(known_file_size_bytes):
+            raise MediaTooLarge("Known media size exceeds configured limit")
         file = await job.context.bot.get_file(job.media_file_id)
         ensure_job_can_continue(job)
         data = await file.download_as_bytearray()
         ensure_job_can_continue(job)
+        if is_media_too_large(len(data)):
+            raise MediaTooLarge("Downloaded media size exceeds configured limit")
         actual_file_size_kb = len(data) // 1024
         prompt = build_prompt(
             job.media_type,
@@ -2784,7 +2898,7 @@ async def process_media_job(job: MediaJob) -> None:
         await deliver_processing_reply(
             job.processing_message,
             user_error_text,
-            reply_markup=retry_keyboard(job.message_processing_id),
+            reply_markup=None if isinstance(error, MediaTooLarge) else retry_keyboard(job.message_processing_id),
         )
     finally:
         job.current_model_index = -1
@@ -2808,7 +2922,13 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def main() -> None:
     STORAGE.init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     app.add_handler(MessageHandler(filters.ALL, guard_update), group=-1)
     app.add_handler(CommandHandler("start", handle_start))
