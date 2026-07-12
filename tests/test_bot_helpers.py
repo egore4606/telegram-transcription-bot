@@ -124,6 +124,34 @@ def test_parse_response_sections_handles_nonstandard_response() -> None:
     assert summary == ""
 
 
+def test_generation_config_requires_transcription_and_summary_schema() -> None:
+    schema = bot.GEMINI_GENERATION_CONFIG.response_json_schema
+
+    assert bot.GEMINI_GENERATION_CONFIG.response_mime_type == "application/json"
+    assert schema["type"] == "object"
+    assert schema["required"] == ["transcription", "summary"]
+    assert schema["properties"]["transcription"]["type"] == "string"
+    assert schema["properties"]["summary"]["type"] == "string"
+
+
+def test_parse_structured_response_repairs_missing_closing_brace() -> None:
+    raw = '{"transcription":"Текст","summary":"Суть"'
+
+    assert bot.parse_structured_response(raw) == ("Текст", "Суть")
+
+
+def test_parse_structured_response_accepts_single_item_array_and_aliases() -> None:
+    raw = '[{"Transcript":"Text","Summary":"Summary"}]'
+
+    assert bot.parse_structured_response(raw) == ("Text", "Summary")
+
+
+def test_parse_structured_response_does_not_repair_truncated_string() -> None:
+    raw = '{"transcription":"unfinished'
+
+    assert bot.parse_structured_response(raw) is None
+
+
 def test_format_response_escapes_html_for_both_mode() -> None:
     raw = "ТРАНСКРИПЦИЯ:\n<hello> & bye\n\nКРАТКОЕ СОДЕРЖАНИЕ:\nUse <b>tags</b>"
 
