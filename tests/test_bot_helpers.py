@@ -199,6 +199,16 @@ def test_build_prompt_differs_for_voice_and_video() -> None:
     assert "что происходит на видео" in video_prompt
 
 
+def test_default_fallback_chain_matches_load_benchmark_recommendation() -> None:
+    assert bot.GEMINI_FALLBACK_MODELS == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash-lite",
+        "gemini-3-flash-preview",
+    ]
+    assert bot.GEMINI_MODEL_CHAIN == [bot.GEMINI_MODEL, *bot.GEMINI_FALLBACK_MODELS]
+
+
 def test_build_prompt_differs_for_auto_and_fixed_language() -> None:
     auto_prompt = bot.build_prompt("voice", "auto", "both")
     fixed_prompt = bot.build_prompt("voice", "de", "both")

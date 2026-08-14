@@ -111,7 +111,7 @@ Common optional values:
 
 ```env
 GEMINI_API_KEY_2=your_backup_gemini_api_key
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-3.1-flash-lite
 MODEL_REQUEST_TIMEOUT=40
 MAX_ACTIVE_JOBS_PER_USER=3
 MAX_ACTIVE_JOBS_PER_CHAT=5
