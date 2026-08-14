@@ -33,12 +33,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 GEMINI_FALLBACK_MODELS = [
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite-preview",
     "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
 ]
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/bot.sqlite3")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
