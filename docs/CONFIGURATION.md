@@ -16,6 +16,7 @@ Copy `.env.example` to `.env` and keep the real file outside version control.
 | Variable | Default | Description |
 |---|---|---|
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | First model attempted by the fallback chain. Selected from the August 2026 load benchmark. |
+| `GEMINI_SUMMARY_MODEL` | `gemini-3.5-flash` | General-purpose model used to summarize, translate, or clean output after a dedicated Gemini 3.5 Transcribe model. Must not be a Transcribe model. |
 | `MODEL_REQUEST_TIMEOUT` | `40` | Timeout for one Gemini request in seconds. |
 | `PRIMARY_MODEL_ATTEMPTS` | `1` | Attempts made with the primary model before continuing. Minimum is one. |
 | `FALLBACK_MODEL_ATTEMPTS` | `1` | Attempts per fallback model. Minimum is one. |
@@ -24,6 +25,14 @@ The application also has a built-in fallback model chain. Keep the configured mo
 with your Gemini account and update the chain in `bot.py` when Google deprecates a model.
 The rationale and measurements for the current defaults are documented in
 [`GEMINI_LOAD_BENCHMARK_2026-08-14.md`](GEMINI_LOAD_BENCHMARK_2026-08-14.md).
+
+Set `GEMINI_MODEL=gemini-3.5-transcribe` for the dedicated file-transcription endpoint, or
+`GEMINI_MODEL=gemini-3.5-transcribe-live` to stream audio through the Live API and show an
+incremental transcript in the Telegram processing message. The dedicated models only transcribe:
+when the selected output mode also needs a summary, TL;DR, translation, or live-transcript cleanup,
+the bot passes the transcript to `GEMINI_SUMMARY_MODEL` in a separate request. Live sessions are
+limited to ten minutes by the API; longer recordings automatically use `gemini-3.5-transcribe`.
+The file endpoint accepts up to one hour. Increase `MODEL_REQUEST_TIMEOUT` for long recordings.
 
 ## Storage
 

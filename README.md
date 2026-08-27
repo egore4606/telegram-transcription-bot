@@ -62,6 +62,7 @@ flowchart LR
 - Background jobs with per-user and per-chat concurrency limits.
 - Queue position, live processing timer, **Stop**, and **Next model** controls.
 - Primary and backup Gemini keys plus a configurable fallback model chain.
+- Dedicated Gemini 3.5 Transcribe support, including incremental Live API previews.
 - Safe splitting of long Telegram messages.
 - SQLite-backed settings, statistics, feedback, model attempts, and processing history.
 - Read-only Flask admin panel available through an SSH tunnel.
@@ -112,6 +113,7 @@ Common optional values:
 ```env
 GEMINI_API_KEY_2=your_backup_gemini_api_key
 GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_SUMMARY_MODEL=gemini-3.5-flash
 MODEL_REQUEST_TIMEOUT=40
 MAX_ACTIVE_JOBS_PER_USER=3
 MAX_ACTIVE_JOBS_PER_CHAT=5
@@ -119,6 +121,28 @@ DATABASE_PATH=/data/bot.sqlite3
 ```
 
 See [Configuration reference](docs/CONFIGURATION.md) for every variable and default.
+
+### Gemini 3.5 Transcribe
+
+Use the dedicated file transcription model with:
+
+```env
+GEMINI_MODEL=gemini-3.5-transcribe
+GEMINI_SUMMARY_MODEL=gemini-3.5-flash
+```
+
+For incremental text while the recording is processed, select the Live API variant:
+
+```env
+GEMINI_MODEL=gemini-3.5-transcribe-live
+GEMINI_SUMMARY_MODEL=gemini-3.5-flash
+```
+
+The Transcribe model produces the transcript. If the selected bot mode also needs a summary,
+TL;DR, translation, or cleanup, the bot sends that transcript to the separate general-purpose
+`GEMINI_SUMMARY_MODEL`. Live transcription updates the processing message with interim and final
+segments. Its API session limit is ten minutes; longer recordings automatically fall back to the
+one-hour file-transcription endpoint. The container includes FFmpeg to extract or convert audio.
 
 ## Commands
 
