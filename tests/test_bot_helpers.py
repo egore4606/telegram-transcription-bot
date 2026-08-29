@@ -513,11 +513,13 @@ def test_live_transcribe_streams_interim_and_final_text(monkeypatch) -> None:
     monkeypatch.setattr(bot.websockets, "connect", connect)
     monkeypatch.setattr(bot, "convert_media_audio", AsyncMock(return_value=(b"a" * 3200, "audio/pcm;rate=16000")))
     monkeypatch.setattr(bot, "wait_with_job_controls", AsyncMock())
-    progress = SimpleNamespace(set_status_text=AsyncMock(), set_live_transcript=AsyncMock())
+    progress = SimpleNamespace(set_live_mode=AsyncMock(), set_live_transcript=AsyncMock())
 
     transcript = asyncio.run(bot.transcribe_live_with_client("secret-key", b"media", progress, None))
 
     assert transcript == "Hello"
+    assert progress.set_live_mode.await_args_list[0].args[0] is True
+    assert progress.set_live_mode.await_args_list[-1].args == (False,)
     assert progress.set_live_transcript.await_args_list[0].args == ("", "Hel")
     assert any(call.kwargs.get("force") is True for call in progress.set_live_transcript.await_args_list)
     assert websocket.sent[0]["setup"]["model"] == "models/gemini-3.5-transcribe-live"
