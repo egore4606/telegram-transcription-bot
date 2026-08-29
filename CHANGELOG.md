@@ -23,5 +23,7 @@ project intends to use semantic version tags for public releases.
 
 ### Fixed
 
+- Live transcription now finishes when Gemini emits `generationComplete` without a trailing
+  `turnComplete` event.
 - Gemini responses now use an enforced JSON schema, and truncated structured responses no longer
   appear as raw JSON inside the transcription block.

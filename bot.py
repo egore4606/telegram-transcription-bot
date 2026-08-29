@@ -1909,7 +1909,9 @@ async def transcribe_live_with_client(
                         interim_text = ""
                         await progress.set_live_transcript(final_text, force=True)
 
-                    if sender_done.is_set() and server_content.get("turnComplete"):
+                    if sender_done.is_set() and (
+                        server_content.get("generationComplete") or server_content.get("turnComplete")
+                    ):
                         return
 
             await progress.set_status_text("🎙 <b>Расшифровываю через Gemini Live...</b>")
