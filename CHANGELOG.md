@@ -9,12 +9,16 @@ project intends to use semantic version tags for public releases.
 
 ### Added
 
+- Dedicated Gemini 3.5 Transcribe file and Live API modes, including incremental transcript updates.
+- FFmpeg-based audio extraction and conversion for video notes and live transcription.
 - Repository governance, contribution, support, and security documentation.
 - Automated CI, dependency updates, code scanning, labels, and release notes.
 - Multilingual README files and a redesigned project overview.
 
 ### Changed
 
+- The default Gemini fallback order now follows the August 2026 load benchmark.
+- The Google Gen AI SDK has been upgraded to the supported 2.x release line.
 - Container publication is gated by the same quality checks used for pull requests.
 
 ### Fixed
