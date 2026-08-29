@@ -60,7 +60,7 @@ flowchart LR
 - Per-chat language and transcript-style settings.
 - Separate settings for private chats and every group.
 - Background jobs with per-user and per-chat concurrency limits.
-- Queue position, live processing timer, **Stop**, and **Next model** controls.
+- Queue position, live processing timer, **Stop**, and compact **Another model** controls.
 - Primary and backup Gemini keys plus a configurable fallback model chain.
 - Dedicated Gemini 3.5 Transcribe support, including incremental Live API previews.
 - Safe splitting of long Telegram messages.

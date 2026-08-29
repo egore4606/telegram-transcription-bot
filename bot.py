@@ -107,17 +107,20 @@ GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(
     response_json_schema=GEMINI_RESPONSE_JSON_SCHEMA,
 )
 STORAGE = Storage(DATABASE_PATH)
-PUBLIC_CHANGELOG_VERSION = "2026-05-25-2"
+PUBLIC_CHANGELOG_VERSION = "2026-08-29-1"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
-Вот что стало лучше:
-- добавлена настройка типа транскрипции: <code>/transcription_type clean</code> для очищенного текста и <code>/transcription_type verbatim</code> для дословного оригинала;
-- новая цепочка Gemini начинается с <code>gemini-3.5-flash</code>;
-- голосовые и кружочки теперь обрабатываются в фоне: несколько сообщений могут идти параллельно, лишние встают в очередь;
-- под сообщением обработки появились кнопки <b>Stop</b> и <b>Next model</b>, также работают команды <code>/stop</code> и <code>/next</code>;
-- длинные ответы больше не ломаются из-за лимита Telegram: бот аккуратно делит результат на несколько сообщений;
-- Gemini теперь отдаёт структурированный JSON, поэтому транскрипция и summary разбираются надёжнее.
+🎙 <b>Транскрипция в реальном времени</b>
+Во время обработки голосового или кружочка текст теперь появляется прямо в сообщении по мере распознавания.
+
+⚡️ <b>Быстрее и надёжнее</b>
+Бот использует новую Gemini 3.5 Transcribe Live и обновлённую цепочку резервных моделей. Для длинных записей автоматически включается файловая транскрипция.
+
+⏭ <b>Удобное переключение</b>
+Если Live-обработка затянулась, под текстом появится подсказка. Кнопка <b>«Другая модель»</b> сразу переключит запрос на следующий вариант.
+
+Обработка по-прежнему продолжается автоматически, даже если одна из моделей временно недоступна.
 
 Если заметишь что-то странное в работе бота, отправь <code>/feedback твой текст</code>."""
 
@@ -1161,7 +1164,7 @@ def job_keyboard(job_id: int) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton("⏹ Stop", callback_data=f"job:stop:{job_id}"),
-                InlineKeyboardButton("⏭ Next model", callback_data=f"job:next:{job_id}"),
+                InlineKeyboardButton("⏭ Другая модель", callback_data=f"job:next:{job_id}"),
             ]
         ]
     )
@@ -1273,6 +1276,7 @@ class ProcessingProgress:
         self._live_final_text = ""
         self._live_interim_text = ""
         self._last_live_refresh_at = 0.0
+        self._live_mode_active = False
 
     def elapsed_seconds(self) -> float:
         return time.monotonic() - self.started_monotonic
@@ -1290,6 +1294,8 @@ class ProcessingProgress:
             if len(preview) > 1200:
                 preview = f"…{preview[-1199:]}"
             rendered += f"\n\n📝 <b>Live-транскрипция:</b>\n<blockquote>{html.escape(preview)}</blockquote>"
+        if self._live_mode_active:
+            rendered += "\n\nДолго обрабатывается? Нажмите <b>«⏭ Другая модель»</b>."
         return rendered
 
     async def refresh(self) -> None:
@@ -1320,6 +1326,12 @@ class ProcessingProgress:
         if not force and now - self._last_live_refresh_at < self.refresh_interval:
             return
         self._last_live_refresh_at = now
+        await self.refresh()
+
+    async def set_live_mode(self, active: bool, status_text: str | None = None) -> None:
+        self._live_mode_active = active
+        if status_text is not None:
+            self.status_text = status_text
         await self.refresh()
 
     async def handle_flood_control(self, retry_after: int) -> None:
@@ -1914,10 +1926,13 @@ async def transcribe_live_with_client(
                     ):
                         return
 
-            await progress.set_status_text("🎙 <b>Расшифровываю через Gemini Live...</b>")
-            async with asyncio.TaskGroup() as task_group:
-                task_group.create_task(send_audio())
-                task_group.create_task(receive_transcript())
+            await progress.set_live_mode(True, "🎙 <b>Расшифровываю через Gemini Live...</b>")
+            try:
+                async with asyncio.TaskGroup() as task_group:
+                    task_group.create_task(send_audio())
+                    task_group.create_task(receive_transcript())
+            finally:
+                await progress.set_live_mode(False)
     except (JobCancelled, NextModelRequested, asyncio.CancelledError):
         raise
     except Exception as error:

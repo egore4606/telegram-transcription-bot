@@ -17,6 +17,7 @@ project intends to use semantic version tags for public releases.
 
 ### Changed
 
+- Live processing now shows a persistent hint and uses a shorter `Другая модель` button label.
 - The default Gemini fallback order now follows the August 2026 load benchmark.
 - The Google Gen AI SDK has been upgraded to the supported 2.x release line.
 - Container publication is gated by the same quality checks used for pull requests.
