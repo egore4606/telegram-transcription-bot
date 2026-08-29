@@ -9,6 +9,7 @@ project intends to use semantic version tags for public releases.
 
 ### Added
 
+- Native Telegram `sendMessageDraft` streaming for Gemini Live transcripts in private chats.
 - Dedicated Gemini 3.5 Transcribe file and Live API modes, including incremental transcript updates.
 - FFmpeg-based audio extraction and conversion for video notes and live transcription.
 - Repository governance, contribution, support, and security documentation.
@@ -17,6 +18,7 @@ project intends to use semantic version tags for public releases.
 
 ### Changed
 
+- Final private-chat results are sent as persistent messages after the ephemeral Live draft.
 - Live processing now shows a persistent hint and uses a shorter `Другая модель` button label.
 - The default Gemini fallback order now follows the August 2026 load benchmark.
 - The Google Gen AI SDK has been upgraded to the supported 2.x release line.

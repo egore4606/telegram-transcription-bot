@@ -70,6 +70,9 @@ PROGRESS_PRIVATE_REFRESH_INTERVAL = max(1.0, float(os.environ.get("PROGRESS_PRIV
 PROGRESS_GROUP_REFRESH_INTERVAL = max(3.0, float(os.environ.get("PROGRESS_GROUP_REFRESH_INTERVAL", "5")))
 TELEGRAM_SAFE_MESSAGE_LIMIT = 3800
 TELEGRAM_SECTION_TEXT_LIMIT = 3000
+TELEGRAM_DRAFT_TEXT_LIMIT = 4096
+LIVE_DRAFT_UPDATE_INTERVAL = 1.0
+LIVE_DRAFT_KEEPALIVE_INTERVAL = 20.0
 ADMIN_HISTORY_DEFAULT_LIMIT = 10
 ADMIN_HISTORY_MAX_LIMIT = 20
 ADMIN_PANEL_REPLY_LIMIT = 3500
@@ -107,12 +110,12 @@ GEMINI_GENERATION_CONFIG = types.GenerateContentConfig(
     response_json_schema=GEMINI_RESPONSE_JSON_SCHEMA,
 )
 STORAGE = Storage(DATABASE_PATH)
-PUBLIC_CHANGELOG_VERSION = "2026-08-29-1"
+PUBLIC_CHANGELOG_VERSION = "2026-08-29-2"
 
 PUBLIC_CHANGELOG_TEXT = """🆕 <b>Что нового в боте</b>
 
 🎙 <b>Транскрипция в реальном времени</b>
-Во время обработки голосового или кружочка текст теперь появляется прямо в сообщении по мере распознавания.
+В личном чате текст теперь печатается нативно и плавно появляется прямо в Telegram по мере распознавания. В группах Live-текст по-прежнему обновляется в сообщении обработки.
 
 ⚡️ <b>Быстрее и надёжнее</b>
 Бот использует новую Gemini 3.5 Transcribe Live и обновлённую цепочку резервных моделей. Для длинных записей автоматически включается файловая транскрипция.
@@ -1261,8 +1264,10 @@ class ProcessingProgress:
         message,
         initial_status_text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        bot=None,
     ) -> None:
         self.message = message
+        self.bot = bot
         self.initial_status_text = initial_status_text
         self.status_text = initial_status_text
         self.reply_markup = reply_markup
@@ -1277,6 +1282,18 @@ class ProcessingProgress:
         self._live_interim_text = ""
         self._last_live_refresh_at = 0.0
         self._live_mode_active = False
+        self._native_live_draft = bool(
+            bot is not None
+            and getattr(getattr(message, "chat", None), "type", None) == "private"
+            and hasattr(bot, "send_message_draft")
+        )
+        self._native_live_draft_used = False
+        message_id = getattr(message, "message_id", 1)
+        self._live_draft_id = max(1, message_id) if isinstance(message_id, int) else 1
+        self._live_draft_last_sent_at = 0.0
+        self._live_draft_last_text = ""
+        self._live_draft_retry_after_until = 0.0
+        self._live_draft_lock = asyncio.Lock()
 
     def elapsed_seconds(self) -> float:
         return time.monotonic() - self.started_monotonic
@@ -1290,7 +1307,7 @@ class ProcessingProgress:
             f"⏱ <b>Обрабатывается:</b> {html.escape(self.elapsed_text())}"
         )
         preview = " ".join(part.strip() for part in (self._live_final_text, self._live_interim_text) if part.strip())
-        if preview:
+        if preview and not self._native_live_draft:
             if len(preview) > 1200:
                 preview = f"…{preview[-1199:]}"
             rendered += f"\n\n📝 <b>Live-транскрипция:</b>\n<blockquote>{html.escape(preview)}</blockquote>"
@@ -1326,13 +1343,73 @@ class ProcessingProgress:
         if not force and now - self._last_live_refresh_at < self.refresh_interval:
             return
         self._last_live_refresh_at = now
+        await self.refresh_live_draft(force=force)
         await self.refresh()
 
     async def set_live_mode(self, active: bool, status_text: str | None = None) -> None:
         self._live_mode_active = active
         if status_text is not None:
             self.status_text = status_text
+        if active:
+            await self.refresh_live_draft(force=True)
         await self.refresh()
+
+    def live_draft_text(self) -> str:
+        transcript = " ".join(
+            part.strip() for part in (self._live_final_text, self._live_interim_text) if part.strip()
+        )
+        if not transcript:
+            return ""
+        prefix = "📝 Распознаю:\n\n"
+        available = TELEGRAM_DRAFT_TEXT_LIMIT - len(prefix)
+        if len(transcript) > available:
+            transcript = f"…{transcript[-(available - 1):]}"
+        return f"{prefix}{transcript}"
+
+    async def refresh_live_draft(self, *, force: bool = False) -> None:
+        if not self._native_live_draft or not self._live_mode_active:
+            return
+
+        async with self._live_draft_lock:
+            now = time.monotonic()
+            if now < self._live_draft_retry_after_until:
+                return
+            text = self.live_draft_text()
+            changed = text != self._live_draft_last_text
+            elapsed = now - self._live_draft_last_sent_at
+            if not force and elapsed < LIVE_DRAFT_UPDATE_INTERVAL:
+                return
+            if not changed and self._live_draft_last_sent_at and elapsed < LIVE_DRAFT_KEEPALIVE_INTERVAL:
+                return
+
+            try:
+                await self.bot.send_message_draft(
+                    chat_id=self.message.chat_id,
+                    message_thread_id=getattr(self.message, "message_thread_id", None),
+                    draft_id=self._live_draft_id,
+                    text=text,
+                )
+            except Exception as error:
+                retry_after = get_retry_after_seconds(error)
+                if retry_after is not None:
+                    self._live_draft_retry_after_until = time.monotonic() + retry_after
+                    logger.warning(
+                        "LIVE DRAFT FLOOD CONTROL | retry_after=%ss | chat=%s",
+                        retry_after,
+                        getattr(self.message, "chat_id", "unknown"),
+                    )
+                    return
+                self._native_live_draft = False
+                logger.warning(
+                    "LIVE DRAFT DISABLED | chat=%s | error=%s",
+                    getattr(self.message, "chat_id", "unknown"),
+                    error,
+                )
+                return
+
+            self._native_live_draft_used = True
+            self._live_draft_last_sent_at = time.monotonic()
+            self._live_draft_last_text = text
 
     async def handle_flood_control(self, retry_after: int) -> None:
         self._retry_after_until = max(self._retry_after_until, time.monotonic() + retry_after)
@@ -1347,6 +1424,7 @@ class ProcessingProgress:
     async def run(self) -> None:
         while not self._stop_event.is_set():
             try:
+                await self.refresh_live_draft()
                 await self.refresh()
             except Exception as error:
                 logger.warning("PROGRESS REFRESH ERROR | error=%s", error)
@@ -1667,6 +1745,35 @@ async def deliver_processing_reply(
             await safe_reply_text(message, chunk)
         except Exception as error:
             logger.warning("FOLLOW-UP RESULT MESSAGE FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
+
+
+async def deliver_job_reply(
+    job: "MediaJob",
+    progress: ProcessingProgress,
+    text: str | list[str],
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    if not progress._native_live_draft_used:
+        await deliver_processing_reply(job.processing_message, text, reply_markup=reply_markup)
+        return
+
+    chunks = [text] if isinstance(text, str) else [chunk for chunk in text if chunk]
+    if not chunks:
+        chunks = [unknown_internal_error_text()]
+
+    try:
+        await safe_reply_text(job.message, chunks[0], reply_markup=reply_markup)
+        for chunk in chunks[1:]:
+            await safe_reply_text(job.message, chunk)
+    except Exception as error:
+        logger.warning("NATIVE DRAFT FINAL SEND FAILED | job=%d | error=%s", job.job_id, error)
+        await deliver_processing_reply(job.processing_message, chunks, reply_markup=reply_markup)
+        return
+
+    try:
+        await job.processing_message.delete()
+    except Exception as error:
+        logger.warning("PROCESSING MESSAGE DELETE FAILED | job=%d | error=%s", job.job_id, error)
 
 
 async def submit_media_job(job: MediaJob) -> str:
@@ -3292,6 +3399,7 @@ async def process_media_job(job: MediaJob) -> None:
         job.processing_message,
         job.progress_text,
         reply_markup=job_keyboard(job.job_id),
+        bot=job.context.bot,
     )
     job.progress = progress
     progress_task: asyncio.Task | None = asyncio.create_task(progress.run())
@@ -3365,7 +3473,7 @@ async def process_media_job(job: MediaJob) -> None:
         final_reply = "\n\n".join(final_reply_chunks)
         await stop_progress(progress, progress_task)
         progress_task = None
-        await deliver_processing_reply(job.processing_message, final_reply_chunks)
+        await deliver_job_reply(job, progress, final_reply_chunks)
 
         STORAGE.increment_stats(job.user_id, job.media_type)
         STORAGE.update_message_processing(
@@ -3426,7 +3534,7 @@ async def process_media_job(job: MediaJob) -> None:
             job.user_id,
             elapsed_seconds,
         )
-        await deliver_processing_reply(job.processing_message, cancelled_job_text())
+        await deliver_job_reply(job, progress, cancelled_job_text())
     except Exception as error:
         elapsed_seconds = time.monotonic() - t_start
         elapsed_ms = int(elapsed_seconds * 1000)
@@ -3457,8 +3565,9 @@ async def process_media_job(job: MediaJob) -> None:
             elapsed_seconds,
             error,
         )
-        await deliver_processing_reply(
-            job.processing_message,
+        await deliver_job_reply(
+            job,
+            progress,
             user_error_text,
             reply_markup=None if isinstance(error, MediaTooLarge) else retry_keyboard(job.message_processing_id),
         )

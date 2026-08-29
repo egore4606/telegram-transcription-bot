@@ -63,6 +63,7 @@ flowchart LR
 - Queue position, live processing timer, **Stop**, and compact **Another model** controls.
 - Primary and backup Gemini keys plus a configurable fallback model chain.
 - Dedicated Gemini 3.5 Transcribe support, including incremental Live API previews.
+- Native Telegram streaming drafts for Gemini Live transcription in private chats.
 - Safe splitting of long Telegram messages.
 - SQLite-backed settings, statistics, feedback, model attempts, and processing history.
 - Read-only Flask admin panel available through an SSH tunnel.
