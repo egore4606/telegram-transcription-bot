@@ -28,6 +28,7 @@
 - Hintergrundwarteschlange mit Limits pro Benutzer und Chat.
 - Fortschrittsanzeige, Warteschlangenposition sowie **Stop**- und **Nächstes Modell**-Aktionen.
 - Primärer und optionaler zweiter Gemini-Schlüssel mit Modell-Fallbacks.
+- Gemini 3.5 Transcribe für Dateien und Live-Transkription direkt in der Fortschrittsnachricht.
 - Sichere Aufteilung langer Telegram-Antworten.
 - SQLite für Einstellungen, Statistiken, Feedback und Verarbeitungshistorie.
 - Schreibgeschütztes Admin-Panel über einen SSH-Tunnel.
@@ -60,6 +61,12 @@ docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 Alle Variablen und Standardwerte stehen in der [Konfigurationsreferenz](CONFIGURATION.md).
+
+Setze `GEMINI_MODEL=gemini-3.5-transcribe` für die Datei-Transkription oder
+`GEMINI_MODEL=gemini-3.5-transcribe-live` für laufend aktualisierten Text. Zusammenfassungen,
+TL;DR, Übersetzungen und zusätzliche Bereinigung übernimmt danach das separate
+`GEMINI_SUMMARY_MODEL`. Live-Sitzungen sind auf zehn Minuten begrenzt; längere Aufnahmen
+wechseln automatisch zum Datei-Modell.
 
 ## Wichtige Befehle
 
