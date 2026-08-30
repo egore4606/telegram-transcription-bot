@@ -26,6 +26,8 @@ project intends to use semantic version tags for public releases.
 
 ### Fixed
 
+- Video notes now use the file transcription model instead of Gemini Live, and FFmpeg reads MP4
+  input from a seekable temporary file to support Telegram video containers reliably.
 - Live transcription now finishes when Gemini emits `generationComplete` without a trailing
   `turnComplete` event.
 - Gemini responses now use an enforced JSON schema, and truncated structured responses no longer

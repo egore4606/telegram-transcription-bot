@@ -83,6 +83,18 @@ for model_name in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
     if model_name not in GEMINI_MODEL_CHAIN:
         GEMINI_MODEL_CHAIN.append(model_name)
 
+
+def model_chain_for_media(media_type: str | None) -> list[str]:
+    if media_type != "video":
+        return list(GEMINI_MODEL_CHAIN)
+
+    chain: list[str] = []
+    for model_name in GEMINI_MODEL_CHAIN:
+        candidate = "gemini-3.5-transcribe" if model_name == "gemini-3.5-transcribe-live" else model_name
+        if candidate not in chain:
+            chain.append(candidate)
+    return chain
+
 # Gemini clients — основной + резервный
 gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
 gemini_api_keys = [GEMINI_API_KEY]
@@ -1692,7 +1704,7 @@ class JobManager:
             return "not_active"
         if job.current_model_index < 0:
             return "not_started"
-        if job.current_model_index >= len(GEMINI_MODEL_CHAIN) - 1:
+        if job.current_model_index >= len(model_chain_for_media(job.media_type)) - 1:
             return "last_model"
 
         job.next_model_event.set()
@@ -1863,37 +1875,50 @@ async def convert_media_audio(media_data: bytes, *, pcm: bool) -> tuple[bytes, s
         if pcm
         else ["-f", "wav", "-acodec", "pcm_s16le", "pipe:1"]
     )
+    input_path = ""
     try:
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            "pipe:0",
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            *output_args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as error:
-        raise RuntimeError("ffmpeg is required for Gemini live transcription and video notes") from error
+        with tempfile.NamedTemporaryFile(suffix=".media", delete=False) as input_file:
+            input_file.write(media_data)
+            input_path = input_file.name
 
-    try:
-        output, stderr = await process.communicate(media_data)
-    except BaseException:
-        process.kill()
-        await process.wait()
-        raise
-    if process.returncode != 0 or not output:
-        detail = stderr.decode("utf-8", errors="replace").strip()[-500:]
-        raise RuntimeError(f"ffmpeg audio conversion failed: {detail or 'empty output'}")
-    return output, "audio/pcm;rate=16000" if pcm else "audio/wav"
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                input_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                *output_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as error:
+            raise RuntimeError("ffmpeg is required for Gemini live transcription and video notes") from error
+
+        try:
+            output, stderr = await process.communicate()
+        except BaseException:
+            process.kill()
+            await process.wait()
+            raise
+
+        output_is_empty = not output or (not pcm and len(output) <= 44)
+        if process.returncode != 0 or output_is_empty:
+            detail = stderr.decode("utf-8", errors="replace").strip()[-500:]
+            raise RuntimeError(f"ffmpeg audio conversion failed: {detail or 'empty output'}")
+        return output, "audio/pcm;rate=16000" if pcm else "audio/wav"
+    finally:
+        if input_path:
+            try:
+                os.unlink(input_path)
+            except FileNotFoundError:
+                pass
 
 
 async def transcribe_file_with_client(
@@ -2344,8 +2369,9 @@ async def call_gemini_with_retries(
     mime_type: str | None = None,
 ) -> tuple[str, str]:
     last_error = None
+    model_chain = model_chain_for_media(job.media_type if job is not None else None)
 
-    for model_index, model_name in enumerate(GEMINI_MODEL_CHAIN):
+    for model_index, model_name in enumerate(model_chain):
         if job is not None:
             job.current_model_index = model_index
             job.current_model_name = model_name
@@ -2436,8 +2462,8 @@ async def call_gemini_with_retries(
                     job.next_model_event.clear()
 
                 next_model_index = model_index + 1
-                if next_model_index < len(GEMINI_MODEL_CHAIN):
-                    next_model = GEMINI_MODEL_CHAIN[next_model_index]
+                if next_model_index < len(model_chain):
+                    next_model = model_chain[next_model_index]
                     await progress.set_status_text(
                         "⏭ <b>Переключаюсь на следующую модель</b>\n"
                         f"<code>{html.escape(model_name)}</code> → <code>{html.escape(next_model)}</code>"
@@ -2479,8 +2505,8 @@ async def call_gemini_with_retries(
                         break
 
                 next_model_index = model_index + 1
-                if next_model_index < len(GEMINI_MODEL_CHAIN):
-                    next_model = GEMINI_MODEL_CHAIN[next_model_index]
+                if next_model_index < len(model_chain):
+                    next_model = model_chain[next_model_index]
                     await progress.set_status_text(
                         "⚠️ <b>Модель всё ещё перегружена</b>\n"
                         f"<code>{html.escape(model_name)}</code>\n"
