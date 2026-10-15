@@ -1,27 +1,12 @@
 {
   "coverage": {
-    "scheduled_rows": 109,
-    "attempted": 1,
-    "skipped": 108,
+    "scheduled_rows": 0,
+    "attempted": 0,
+    "skipped": 0,
     "successes": 0
   },
   "expected_rows": 1308,
-  "cycles_with_rows": 1,
+  "cycles_with_rows": 0,
   "planned_cycles": 12,
-  "statistics": [
-    {
-      "model": "gemini-3.1-pro-preview",
-      "track": "json_original",
-      "input": "long_voice",
-      "attempts": 1,
-      "successes": 0,
-      "statuses": {
-        "quota": 1
-      },
-      "median_seconds": null,
-      "p90_seconds": null,
-      "max_seconds": null,
-      "first_text_median_seconds": null
-    }
-  ]
+  "statistics": []
 }
