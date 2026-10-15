@@ -1,0 +1,1 @@
+cycle,started_at,model,track,input,status,latency_seconds,stt_seconds,first_text_seconds,postprocess_seconds,preprocess_seconds,connect_seconds,setup_seconds,send_seconds,completion,inference_calls
