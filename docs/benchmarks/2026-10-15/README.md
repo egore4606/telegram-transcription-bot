@@ -3,8 +3,8 @@
 **ПРОМЕЖУТОЧНЫЙ ОТЧЁТ — эксперимент продолжается**
 
 Плановое окно UTC: `2026-10-15T15:55:34+00:00` → `2026-10-16T15:55:34+00:00`. 24 часа, каждые 2 часа.
-Циклы с записанными строками: **0 / 12**. Строки: **0 / 1308**.
-Реальные попытки: **0**; успешные: **0**; пропущенные защитой: **0**.
+Циклы с записанными строками: **1 / 12**. Строки: **109 / 1308**.
+Реальные попытки: **47**; успешные: **25**; пропущенные защитой: **62**.
 
 ## Что измеряется
 
@@ -35,16 +35,72 @@
 
 | Модель | Трек | Образец | Успех/попытки | median, s | p90, s | max, s | first text median, s |
 |---|---|---|---:|---:|---:|---:|---:|
+| `gemini-2.5-flash` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-2.5-flash-lite` | json_original | short_voice | 1/1 | 1.624 | 1.624 | 1.624 | — |
+| `gemini-2.5-flash-lite` | json_original | video_note | 1/1 | 6.614 | 6.614 | 6.614 | — |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | long_voice | 1/1 | 183.564 | 183.564 | 183.564 | 4.661 |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | short_voice | 1/1 | 6.170 | 6.170 | 6.170 | 3.321 |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | video_note | 1/1 | 33.059 | 33.059 | 33.059 | 3.149 |
+| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | short_voice | 1/1 | 6.612 | 6.612 | 6.612 | 3.488 |
+| `gemini-2.5-pro` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-2.5-pro` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-2.5-pro` | json_original | video_note | 0/1 | — | — | — | — |
+| `gemini-3-flash-preview` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-3-flash-preview` | json_original | short_voice | 0/1 | — | — | — | — |
+| `gemini-3.1-flash-lite` | json_audio_control | video_note | 1/1 | 1.978 | 1.978 | 1.978 | — |
+| `gemini-3.1-flash-lite` | json_original | long_voice | 1/1 | 13.567 | 13.567 | 13.567 | — |
+| `gemini-3.1-flash-lite` | json_original | video_note | 0/1 | — | — | — | — |
+| `gemini-3.1-flash-lite-preview` | json_audio_control | video_note | 1/1 | 10.914 | 10.914 | 10.914 | — |
+| `gemini-3.1-flash-lite-preview` | json_original | short_voice | 1/1 | 1.718 | 1.718 | 1.718 | — |
+| `gemini-3.1-flash-lite-preview` | json_original | video_note | 1/1 | 2.369 | 2.369 | 2.369 | — |
+| `gemini-3.1-pro-preview` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-3.1-pro-preview-customtools` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-3.5-flash` | json_audio_control | video_note | 1/1 | 10.131 | 10.131 | 10.131 | — |
+| `gemini-3.5-flash` | json_original | short_voice | 1/1 | 9.327 | 9.327 | 9.327 | — |
+| `gemini-3.5-flash` | json_original | video_note | 0/1 | — | — | — | — |
+| `gemini-3.5-flash-lite` | json_audio_control | video_note | 1/1 | 5.260 | 5.260 | 5.260 | — |
+| `gemini-3.5-flash-lite` | json_original | video_note | 1/1 | 6.877 | 6.877 | 6.877 | — |
+| `gemini-3.5-transcribe` | file_smart_pipeline | video_note | 1/1 | 14.052 | 14.052 | 14.052 | — |
+| `gemini-3.5-transcribe` | file_verbatim_stt | video_note | 1/1 | 6.162 | 6.162 | 6.162 | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | long_voice | 0/1 | — | — | — | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | video_note | 1/1 | 1.646 | 1.646 | 1.646 | 1.201 |
+| `gemini-3.5-transcribe-live` | live_production_pipeline | long_voice | 1/1 | 186.202 | 186.202 | 186.202 | 3.883 |
+| `gemini-3.5-transcribe-live` | live_production_pipeline | video_note | 0/1 | — | — | — | — |
+| `gemini-3.5-transcribe-live` | live_smart_stt | long_voice | 1/1 | 178.783 | 178.783 | 178.783 | 3.875 |
+| `gemini-3.5-transcribe-live` | live_smart_stt | short_voice | 1/1 | 3.255 | 3.255 | 3.255 | 2.614 |
+| `gemini-3.6-flash` | json_audio_control | video_note | 1/1 | 4.831 | 4.831 | 4.831 | — |
+| `gemini-3.6-flash` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-3.7-flash` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-3.7-flash` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-3.7-flash` | json_original | video_note | 0/1 | — | — | — | — |
+| `gemini-3.8-flash` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-4-argon` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-flash-latest` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-flash-lite-latest` | json_audio_control | video_note | 1/1 | 5.520 | 5.520 | 5.520 | — |
+| `gemini-flash-lite-latest` | json_original | long_voice | 1/1 | 13.136 | 13.136 | 13.136 | — |
+| `gemini-flash-lite-latest` | json_original | video_note | 1/1 | 7.209 | 7.209 | 7.209 | — |
+| `gemini-omni-1.1-flash` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-omni-flash-preview` | json_original | short_voice | 0/1 | — | — | — | — |
+| `gemini-pro-latest` | json_original | long_voice | 0/1 | — | — | — | — |
 
 ## День и ночь (Europe/Berlin)
 
 | Период | Попытки | Успехи |
 |---|---:|---:|
+| day 10:00–20:59 | 47 | 25 |
 
 ## Ошибки и покрытие
 
 | Статус | Количество |
 |---|---:|
+| error | 11 |
+| quota_global | 1 |
+| quota_model_zero | 6 |
+| skipped_model_quota | 7 |
+| skipped_quota | 55 |
+| success | 25 |
+| timeout | 1 |
+| unavailable | 3 |
 
 ## Данные и воспроизводимость
 
