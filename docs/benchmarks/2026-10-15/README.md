@@ -3,8 +3,8 @@
 **ПРОМЕЖУТОЧНЫЙ ОТЧЁТ — эксперимент продолжается**
 
 Плановое окно UTC: `2026-10-15T15:55:34+00:00` → `2026-10-16T15:55:34+00:00`. 24 часа, каждые 2 часа.
-Циклы с записанными строками: **7 / 12**. Строки: **763 / 1308**.
-Реальные попытки: **378**; успешные: **205**; пропущенные защитой: **385**.
+Циклы с записанными строками: **8 / 12**. Строки: **872 / 1308**.
+Реальные попытки: **379**; успешные: **205**; пропущенные защитой: **493**.
 
 ## Что измеряется
 
@@ -92,7 +92,7 @@
 | `gemini-3.5-transcribe` | file_verbatim_stt | long_voice | 2/3 | 8.710 | 9.716 | 9.716 | — |
 | `gemini-3.5-transcribe` | file_verbatim_stt | short_voice | 5/5 | 6.342 | 14.869 | 14.869 | — |
 | `gemini-3.5-transcribe` | file_verbatim_stt | video_note | 4/5 | 7.527 | 8.002 | 8.002 | — |
-| `gemini-3.5-transcribe-live` | live_burst_experimental | long_voice | 0/7 | — | — | — | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | long_voice | 0/8 | — | — | — | — |
 | `gemini-3.5-transcribe-live` | live_burst_experimental | short_voice | 0/5 | — | — | — | — |
 | `gemini-3.5-transcribe-live` | live_burst_experimental | video_note | 4/4 | 1.507 | 1.646 | 1.646 | 1.180 |
 | `gemini-3.5-transcribe-live` | live_production_pipeline | long_voice | 1/2 | 186.202 | 186.202 | 186.202 | 3.883 |
@@ -147,18 +147,18 @@
 | Период | Попытки | Успехи |
 |---|---:|---:|
 | day 10:00–20:59 | 127 | 68 |
-| night 21:00–09:59 | 251 | 137 |
+| night 21:00–09:59 | 252 | 137 |
 
 ## Ошибки и покрытие
 
 | Статус | Количество |
 |---|---:|
 | error | 80 |
-| quota_global | 7 |
+| quota_global | 8 |
 | quota_model_limit | 11 |
 | quota_model_zero | 39 |
 | skipped_model_quota | 93 |
-| skipped_quota | 292 |
+| skipped_quota | 400 |
 | success | 205 |
 | timeout | 18 |
 | unavailable | 18 |

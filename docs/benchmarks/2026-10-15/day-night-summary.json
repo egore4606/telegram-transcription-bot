@@ -2043,10 +2043,10 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_burst_experimental",
       "input": "long_voice",
-      "attempts": 5,
+      "attempts": 6,
       "successes": 0,
       "statuses": {
-        "quota_global": 5
+        "quota_global": 6
       },
       "median_seconds": null,
       "p90_seconds": null,

@@ -1,12 +1,12 @@
 {
   "coverage": {
-    "scheduled_rows": 763,
-    "attempted": 378,
-    "skipped": 385,
+    "scheduled_rows": 872,
+    "attempted": 379,
+    "skipped": 493,
     "successes": 205
   },
   "expected_rows": 1308,
-  "cycles_with_rows": 7,
+  "cycles_with_rows": 8,
   "planned_cycles": 12,
   "statistics": [
     {
@@ -830,10 +830,10 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_burst_experimental",
       "input": "long_voice",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 0,
       "statuses": {
-        "quota_global": 7
+        "quota_global": 8
       },
       "median_seconds": null,
       "p90_seconds": null,
