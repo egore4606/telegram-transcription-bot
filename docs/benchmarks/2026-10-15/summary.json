@@ -1,22 +1,22 @@
 {
   "coverage": {
-    "scheduled_rows": 1090,
-    "attempted": 512,
-    "skipped": 578,
-    "successes": 278
+    "scheduled_rows": 1199,
+    "attempted": 591,
+    "skipped": 608,
+    "successes": 323
   },
   "expected_rows": 1308,
-  "cycles_with_rows": 10,
+  "cycles_with_rows": 11,
   "planned_cycles": 12,
   "statistics": [
     {
       "model": "gemini-2.5-flash",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 9,
+      "attempts": 10,
       "successes": 7,
       "statuses": {
-        "error": 2,
+        "error": 3,
         "success": 7
       },
       "median_seconds": 6.411,
@@ -28,27 +28,27 @@
       "model": "gemini-2.5-flash",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 3,
-      "successes": 3,
+      "attempts": 4,
+      "successes": 4,
       "statuses": {
-        "success": 3
+        "success": 4
       },
-      "median_seconds": 24.531,
-      "p90_seconds": 26.549,
-      "max_seconds": 26.549,
+      "median_seconds": 25.54,
+      "p90_seconds": 28.223,
+      "max_seconds": 28.223,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-2.5-flash",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 4,
-      "successes": 3,
+      "attempts": 5,
+      "successes": 4,
       "statuses": {
-        "success": 3,
+        "success": 4,
         "error": 1
       },
-      "median_seconds": 4.652,
+      "median_seconds": 4.1,
       "p90_seconds": 4.753,
       "max_seconds": 4.753,
       "first_text_median_seconds": null
@@ -57,13 +57,13 @@
       "model": "gemini-2.5-flash",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 4,
-      "successes": 3,
+      "attempts": 5,
+      "successes": 4,
       "statuses": {
-        "success": 3,
+        "success": 4,
         "error": 1
       },
-      "median_seconds": 5.832,
+      "median_seconds": 6.274,
       "p90_seconds": 6.85,
       "max_seconds": 6.85,
       "first_text_median_seconds": null
@@ -72,12 +72,12 @@
       "model": "gemini-2.5-flash-lite",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 7,
-      "successes": 7,
+      "attempts": 8,
+      "successes": 8,
       "statuses": {
-        "success": 7
+        "success": 8
       },
-      "median_seconds": 1.8,
+      "median_seconds": 1.837,
       "p90_seconds": 2.263,
       "max_seconds": 2.263,
       "first_text_median_seconds": null
@@ -86,11 +86,12 @@
       "model": "gemini-2.5-flash-lite",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 3,
       "statuses": {
         "success": 3,
-        "error": 1
+        "error": 1,
+        "invalid_json": 1
       },
       "median_seconds": 5.274,
       "p90_seconds": 6.503,
@@ -115,12 +116,12 @@
       "model": "gemini-2.5-flash-lite",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 8,
-      "successes": 8,
+      "attempts": 9,
+      "successes": 9,
       "statuses": {
-        "success": 8
+        "success": 9
       },
-      "median_seconds": 3.897,
+      "median_seconds": 4.009,
       "p90_seconds": 6.614,
       "max_seconds": 6.614,
       "first_text_median_seconds": null
@@ -129,102 +130,18 @@
       "model": "gemini-2.5-flash-native-audio-latest",
       "track": "live_agent_input_stt",
       "input": "long_voice",
-      "attempts": 4,
-      "successes": 4,
-      "statuses": {
-        "success": 4
-      },
-      "median_seconds": 182.26,
-      "p90_seconds": 183.564,
-      "max_seconds": 183.564,
-      "first_text_median_seconds": 4.595
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-latest",
-      "track": "live_agent_input_stt",
-      "input": "short_voice",
-      "attempts": 7,
-      "successes": 7,
-      "statuses": {
-        "success": 7
-      },
-      "median_seconds": 5.78,
-      "p90_seconds": 6.17,
-      "max_seconds": 6.17,
-      "first_text_median_seconds": 3.075
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-latest",
-      "track": "live_agent_input_stt",
-      "input": "video_note",
-      "attempts": 7,
-      "successes": 7,
-      "statuses": {
-        "success": 7
-      },
-      "median_seconds": 31.807,
-      "p90_seconds": 33.059,
-      "max_seconds": 33.059,
-      "first_text_median_seconds": 2.907
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
-      "track": "live_agent_input_stt",
-      "input": "long_voice",
       "attempts": 5,
       "successes": 5,
       "statuses": {
         "success": 5
       },
-      "median_seconds": 190.913,
-      "p90_seconds": 198.674,
-      "max_seconds": 198.674,
-      "first_text_median_seconds": 4.516
+      "median_seconds": 183.558,
+      "p90_seconds": 184.325,
+      "max_seconds": 184.325,
+      "first_text_median_seconds": 4.581
     },
     {
-      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
-      "track": "live_agent_input_stt",
-      "input": "short_voice",
-      "attempts": 4,
-      "successes": 4,
-      "statuses": {
-        "success": 4
-      },
-      "median_seconds": 6.157,
-      "p90_seconds": 6.612,
-      "max_seconds": 6.612,
-      "first_text_median_seconds": 3.397
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
-      "track": "live_agent_input_stt",
-      "input": "video_note",
-      "attempts": 5,
-      "successes": 5,
-      "statuses": {
-        "success": 5
-      },
-      "median_seconds": 32.381,
-      "p90_seconds": 35.802,
-      "max_seconds": 35.802,
-      "first_text_median_seconds": 2.911
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
-      "track": "live_agent_input_stt",
-      "input": "long_voice",
-      "attempts": 4,
-      "successes": 4,
-      "statuses": {
-        "success": 4
-      },
-      "median_seconds": 180.55,
-      "p90_seconds": 181.389,
-      "max_seconds": 181.389,
-      "first_text_median_seconds": 4.572
-    },
-    {
-      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "model": "gemini-2.5-flash-native-audio-latest",
       "track": "live_agent_input_stt",
       "input": "short_voice",
       "attempts": 8,
@@ -232,29 +149,127 @@
       "statuses": {
         "success": 8
       },
-      "median_seconds": 6.425,
-      "p90_seconds": 7.862,
-      "max_seconds": 7.862,
-      "first_text_median_seconds": 3.079
+      "median_seconds": 5.812,
+      "p90_seconds": 6.898,
+      "max_seconds": 6.898,
+      "first_text_median_seconds": 3.103
     },
     {
-      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "model": "gemini-2.5-flash-native-audio-latest",
       "track": "live_agent_input_stt",
       "input": "video_note",
+      "attempts": 8,
+      "successes": 8,
+      "statuses": {
+        "success": 8
+      },
+      "median_seconds": 31.688,
+      "p90_seconds": 33.059,
+      "max_seconds": 33.059,
+      "first_text_median_seconds": 2.942
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+      "track": "live_agent_input_stt",
+      "input": "long_voice",
+      "attempts": 6,
+      "successes": 6,
+      "statuses": {
+        "success": 6
+      },
+      "median_seconds": 190.117,
+      "p90_seconds": 198.674,
+      "max_seconds": 198.674,
+      "first_text_median_seconds": 4.521
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+      "track": "live_agent_input_stt",
+      "input": "short_voice",
       "attempts": 5,
       "successes": 5,
       "statuses": {
         "success": 5
       },
-      "median_seconds": 32.515,
+      "median_seconds": 5.935,
+      "p90_seconds": 6.612,
+      "max_seconds": 6.612,
+      "first_text_median_seconds": 3.368
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+      "track": "live_agent_input_stt",
+      "input": "video_note",
+      "attempts": 6,
+      "successes": 6,
+      "statuses": {
+        "success": 6
+      },
+      "median_seconds": 32.695,
+      "p90_seconds": 35.802,
+      "max_seconds": 35.802,
+      "first_text_median_seconds": 2.96
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "track": "live_agent_input_stt",
+      "input": "long_voice",
+      "attempts": 5,
+      "successes": 5,
+      "statuses": {
+        "success": 5
+      },
+      "median_seconds": 181.199,
+      "p90_seconds": 192.846,
+      "max_seconds": 192.846,
+      "first_text_median_seconds": 4.59
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "track": "live_agent_input_stt",
+      "input": "short_voice",
+      "attempts": 9,
+      "successes": 9,
+      "statuses": {
+        "success": 9
+      },
+      "median_seconds": 6.154,
+      "p90_seconds": 7.862,
+      "max_seconds": 7.862,
+      "first_text_median_seconds": 3.097
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "track": "live_agent_input_stt",
+      "input": "video_note",
+      "attempts": 6,
+      "successes": 6,
+      "statuses": {
+        "success": 6
+      },
+      "median_seconds": 32.335,
       "p90_seconds": 33.488,
       "max_seconds": 33.488,
-      "first_text_median_seconds": 3.019
+      "first_text_median_seconds": 3.026
     },
     {
       "model": "gemini-2.5-pro",
       "track": "json_audio_control",
       "input": "video_note",
+      "attempts": 7,
+      "successes": 0,
+      "statuses": {
+        "unavailable": 7
+      },
+      "median_seconds": null,
+      "p90_seconds": null,
+      "max_seconds": null,
+      "first_text_median_seconds": null
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "track": "json_original",
+      "input": "long_voice",
       "attempts": 6,
       "successes": 0,
       "statuses": {
@@ -268,7 +283,7 @@
     {
       "model": "gemini-2.5-pro",
       "track": "json_original",
-      "input": "long_voice",
+      "input": "short_voice",
       "attempts": 5,
       "successes": 0,
       "statuses": {
@@ -282,25 +297,11 @@
     {
       "model": "gemini-2.5-pro",
       "track": "json_original",
-      "input": "short_voice",
-      "attempts": 4,
-      "successes": 0,
-      "statuses": {
-        "unavailable": 4
-      },
-      "median_seconds": null,
-      "p90_seconds": null,
-      "max_seconds": null,
-      "first_text_median_seconds": null
-    },
-    {
-      "model": "gemini-2.5-pro",
-      "track": "json_original",
       "input": "video_note",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 0,
       "statuses": {
-        "unavailable": 7
+        "unavailable": 8
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -311,13 +312,13 @@
       "model": "gemini-3-flash-preview",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 4,
+      "attempts": 7,
+      "successes": 5,
       "statuses": {
         "error": 2,
-        "success": 4
+        "success": 5
       },
-      "median_seconds": 5.529,
+      "median_seconds": 5.459,
       "p90_seconds": 14.166,
       "max_seconds": 14.166,
       "first_text_median_seconds": null
@@ -326,13 +327,13 @@
       "model": "gemini-3-flash-preview",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 4,
-      "successes": 3,
+      "attempts": 5,
+      "successes": 4,
       "statuses": {
         "error": 1,
-        "success": 3
+        "success": 4
       },
-      "median_seconds": 8.056,
+      "median_seconds": 7.647,
       "p90_seconds": 11.163,
       "max_seconds": 11.163,
       "first_text_median_seconds": null
@@ -341,13 +342,13 @@
       "model": "gemini-3-flash-preview",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 5,
-      "successes": 4,
+      "attempts": 6,
+      "successes": 5,
       "statuses": {
         "error": 1,
-        "success": 4
+        "success": 5
       },
-      "median_seconds": 3.414,
+      "median_seconds": 3.413,
       "p90_seconds": 13.761,
       "max_seconds": 13.761,
       "first_text_median_seconds": null
@@ -356,12 +357,12 @@
       "model": "gemini-3-flash-preview",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 6,
+      "attempts": 7,
+      "successes": 7,
       "statuses": {
-        "success": 6
+        "success": 7
       },
-      "median_seconds": 6.265,
+      "median_seconds": 6.27,
       "p90_seconds": 19.148,
       "max_seconds": 19.148,
       "first_text_median_seconds": null
@@ -370,26 +371,26 @@
       "model": "gemini-3.1-flash-lite",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 8,
-      "successes": 4,
+      "attempts": 9,
+      "successes": 5,
       "statuses": {
-        "success": 4,
+        "success": 5,
         "error": 4
       },
-      "median_seconds": 2.224,
-      "p90_seconds": 3.578,
-      "max_seconds": 3.578,
+      "median_seconds": 2.469,
+      "p90_seconds": 17.418,
+      "max_seconds": 17.418,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-3.1-flash-lite",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 5,
       "statuses": {
         "success": 5,
-        "error": 2
+        "error": 3
       },
       "median_seconds": 5.694,
       "p90_seconds": 13.567,
@@ -400,28 +401,28 @@
       "model": "gemini-3.1-flash-lite",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 5,
-      "successes": 3,
+      "attempts": 6,
+      "successes": 4,
       "statuses": {
-        "success": 3,
+        "success": 4,
         "error": 2
       },
-      "median_seconds": 1.508,
-      "p90_seconds": 6.884,
-      "max_seconds": 6.884,
+      "median_seconds": 4.196,
+      "p90_seconds": 17.339,
+      "max_seconds": 17.339,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-3.1-flash-lite",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 7,
-      "successes": 4,
+      "attempts": 8,
+      "successes": 5,
       "statuses": {
         "error": 3,
-        "success": 4
+        "success": 5
       },
-      "median_seconds": 4.808,
+      "median_seconds": 3.969,
       "p90_seconds": 11.218,
       "max_seconds": 11.218,
       "first_text_median_seconds": null
@@ -430,28 +431,28 @@
       "model": "gemini-3.1-flash-lite-preview",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 3,
+      "attempts": 7,
+      "successes": 4,
       "statuses": {
-        "success": 3,
+        "success": 4,
         "error": 3
       },
-      "median_seconds": 2.043,
-      "p90_seconds": 10.914,
-      "max_seconds": 10.914,
+      "median_seconds": 6.479,
+      "p90_seconds": 17.076,
+      "max_seconds": 17.076,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-3.1-flash-lite-preview",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 6,
-      "successes": 3,
+      "attempts": 7,
+      "successes": 4,
       "statuses": {
         "error": 3,
-        "success": 3
+        "success": 4
       },
-      "median_seconds": 5.082,
+      "median_seconds": 4.929,
       "p90_seconds": 5.105,
       "max_seconds": 5.105,
       "first_text_median_seconds": null
@@ -460,11 +461,11 @@
       "model": "gemini-3.1-flash-lite-preview",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 5,
+      "attempts": 6,
       "successes": 3,
       "statuses": {
         "success": 3,
-        "error": 2
+        "error": 3
       },
       "median_seconds": 1.718,
       "p90_seconds": 2.226,
@@ -475,11 +476,11 @@
       "model": "gemini-3.1-flash-lite-preview",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 6,
+      "attempts": 7,
       "successes": 4,
       "statuses": {
         "success": 4,
-        "error": 2
+        "error": 3
       },
       "median_seconds": 1.955,
       "p90_seconds": 2.369,
@@ -490,43 +491,43 @@
       "model": "gemini-3.1-flash-live-preview",
       "track": "live_agent_input_stt",
       "input": "long_voice",
-      "attempts": 6,
-      "successes": 6,
+      "attempts": 7,
+      "successes": 7,
       "statuses": {
-        "success": 6
+        "success": 7
       },
-      "median_seconds": 181.111,
+      "median_seconds": 181.118,
       "p90_seconds": 181.828,
       "max_seconds": 181.828,
-      "first_text_median_seconds": 180.304
+      "first_text_median_seconds": 180.326
     },
     {
       "model": "gemini-3.1-flash-live-preview",
       "track": "live_agent_input_stt",
       "input": "short_voice",
-      "attempts": 5,
-      "successes": 5,
-      "statuses": {
-        "success": 5
-      },
-      "median_seconds": 3.916,
-      "p90_seconds": 4.145,
-      "max_seconds": 4.145,
-      "first_text_median_seconds": 3.202
-    },
-    {
-      "model": "gemini-3.1-flash-live-preview",
-      "track": "live_agent_input_stt",
-      "input": "video_note",
       "attempts": 6,
       "successes": 6,
       "statuses": {
         "success": 6
       },
-      "median_seconds": 30.888,
+      "median_seconds": 3.928,
+      "p90_seconds": 4.738,
+      "max_seconds": 4.738,
+      "first_text_median_seconds": 3.157
+    },
+    {
+      "model": "gemini-3.1-flash-live-preview",
+      "track": "live_agent_input_stt",
+      "input": "video_note",
+      "attempts": 7,
+      "successes": 7,
+      "statuses": {
+        "success": 7
+      },
+      "median_seconds": 30.869,
       "p90_seconds": 31.348,
       "max_seconds": 31.348,
-      "first_text_median_seconds": 29.949
+      "first_text_median_seconds": 29.94
     },
     {
       "model": "gemini-3.1-pro-preview",
@@ -574,10 +575,10 @@
       "model": "gemini-3.1-pro-preview",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 1,
+      "attempts": 2,
       "successes": 0,
       "statuses": {
-        "quota_model_zero": 1
+        "quota_model_zero": 2
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -630,10 +631,10 @@
       "model": "gemini-3.1-pro-preview-customtools",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 2,
+      "attempts": 3,
       "successes": 0,
       "statuses": {
-        "quota_model_zero": 2
+        "quota_model_zero": 3
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -673,13 +674,13 @@
       "model": "gemini-3.5-flash",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 3,
-      "successes": 2,
+      "attempts": 4,
+      "successes": 3,
       "statuses": {
-        "success": 2,
+        "success": 3,
         "quota_model_limit": 1
       },
-      "median_seconds": 6.14,
+      "median_seconds": 2.953,
       "p90_seconds": 9.327,
       "max_seconds": 9.327,
       "first_text_median_seconds": null
@@ -703,12 +704,12 @@
       "model": "gemini-3.5-flash-lite",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 8,
-      "successes": 8,
+      "attempts": 9,
+      "successes": 9,
       "statuses": {
-        "success": 8
+        "success": 9
       },
-      "median_seconds": 2.883,
+      "median_seconds": 3.606,
       "p90_seconds": 6.804,
       "max_seconds": 6.804,
       "first_text_median_seconds": null
@@ -717,13 +718,13 @@
       "model": "gemini-3.5-flash-lite",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 6,
-      "successes": 5,
+      "attempts": 7,
+      "successes": 6,
       "statuses": {
-        "success": 5,
+        "success": 6,
         "error": 1
       },
-      "median_seconds": 4.71,
+      "median_seconds": 5.881,
       "p90_seconds": 13.678,
       "max_seconds": 13.678,
       "first_text_median_seconds": null
@@ -732,26 +733,26 @@
       "model": "gemini-3.5-flash-lite",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 4,
-      "successes": 4,
+      "attempts": 5,
+      "successes": 5,
       "statuses": {
-        "success": 4
+        "success": 5
       },
-      "median_seconds": 1.666,
-      "p90_seconds": 1.956,
-      "max_seconds": 1.956,
+      "median_seconds": 1.806,
+      "p90_seconds": 5.236,
+      "max_seconds": 5.236,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-3.5-flash-lite",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 6,
+      "attempts": 7,
+      "successes": 7,
       "statuses": {
-        "success": 6
+        "success": 7
       },
-      "median_seconds": 2.721,
+      "median_seconds": 2.834,
       "p90_seconds": 9.853,
       "max_seconds": 9.853,
       "first_text_median_seconds": null
@@ -775,10 +776,10 @@
       "model": "gemini-3.5-transcribe",
       "track": "file_smart_pipeline",
       "input": "short_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 1,
       "statuses": {
-        "quota_model_limit": 2,
+        "quota_model_limit": 3,
         "success": 1,
         "error": 1
       },
@@ -791,15 +792,15 @@
       "model": "gemini-3.5-transcribe",
       "track": "file_smart_pipeline",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 4,
+      "attempts": 7,
+      "successes": 5,
       "statuses": {
-        "success": 4,
+        "success": 5,
         "error": 2
       },
-      "median_seconds": 10.305,
-      "p90_seconds": 14.052,
-      "max_seconds": 14.052,
+      "median_seconds": 11.195,
+      "p90_seconds": 18.727,
+      "max_seconds": 18.727,
       "first_text_median_seconds": null
     },
     {
@@ -821,12 +822,12 @@
       "model": "gemini-3.5-transcribe",
       "track": "file_verbatim_stt",
       "input": "short_voice",
-      "attempts": 7,
-      "successes": 7,
+      "attempts": 8,
+      "successes": 8,
       "statuses": {
-        "success": 7
+        "success": 8
       },
-      "median_seconds": 6.342,
+      "median_seconds": 6.464,
       "p90_seconds": 14.869,
       "max_seconds": 14.869,
       "first_text_median_seconds": null
@@ -835,13 +836,13 @@
       "model": "gemini-3.5-transcribe",
       "track": "file_verbatim_stt",
       "input": "video_note",
-      "attempts": 7,
-      "successes": 6,
+      "attempts": 8,
+      "successes": 7,
       "statuses": {
-        "success": 6,
+        "success": 7,
         "timeout": 1
       },
-      "median_seconds": 7.039,
+      "median_seconds": 6.698,
       "p90_seconds": 8.002,
       "max_seconds": 8.002,
       "first_text_median_seconds": null
@@ -850,10 +851,10 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_burst_experimental",
       "input": "long_voice",
-      "attempts": 10,
+      "attempts": 11,
       "successes": 0,
       "statuses": {
-        "quota_global": 10
+        "quota_global": 11
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -864,10 +865,10 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_burst_experimental",
       "input": "short_voice",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 0,
       "statuses": {
-        "timeout": 7
+        "timeout": 8
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -878,15 +879,15 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_burst_experimental",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 6,
+      "attempts": 7,
+      "successes": 7,
       "statuses": {
-        "success": 6
+        "success": 7
       },
-      "median_seconds": 1.532,
-      "p90_seconds": 1.646,
-      "max_seconds": 1.646,
-      "first_text_median_seconds": 1.213
+      "median_seconds": 1.541,
+      "p90_seconds": 1.95,
+      "max_seconds": 1.95,
+      "first_text_median_seconds": 1.225
     },
     {
       "model": "gemini-3.5-transcribe-live",
@@ -907,10 +908,10 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_production_pipeline",
       "input": "short_voice",
-      "attempts": 3,
+      "attempts": 4,
       "successes": 0,
       "statuses": {
-        "error": 2,
+        "error": 3,
         "quota_model_limit": 1
       },
       "median_seconds": null,
@@ -950,24 +951,24 @@
       "model": "gemini-3.5-transcribe-live",
       "track": "live_smart_stt",
       "input": "short_voice",
-      "attempts": 6,
-      "successes": 6,
+      "attempts": 7,
+      "successes": 7,
       "statuses": {
-        "success": 6
+        "success": 7
       },
-      "median_seconds": 3.196,
+      "median_seconds": 3.198,
       "p90_seconds": 3.278,
       "max_seconds": 3.278,
-      "first_text_median_seconds": 2.326
+      "first_text_median_seconds": 2.34
     },
     {
       "model": "gemini-3.5-transcribe-live",
       "track": "live_smart_stt",
       "input": "video_note",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 0,
       "statuses": {
-        "timeout": 4
+        "timeout": 5
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -978,11 +979,12 @@
       "model": "gemini-3.6-flash",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 5,
+      "attempts": 6,
       "successes": 3,
       "statuses": {
         "success": 3,
-        "error": 2
+        "error": 2,
+        "quota_model_limit": 1
       },
       "median_seconds": 3.628,
       "p90_seconds": 4.831,
@@ -1041,13 +1043,13 @@
       "model": "gemini-3.7-flash",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 6,
-      "successes": 1,
+      "attempts": 7,
+      "successes": 2,
       "statuses": {
         "error": 5,
-        "success": 1
+        "success": 2
       },
-      "median_seconds": 11.097,
+      "median_seconds": 8.406,
       "p90_seconds": 11.097,
       "max_seconds": 11.097,
       "first_text_median_seconds": null
@@ -1056,10 +1058,10 @@
       "model": "gemini-3.7-flash",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 1,
       "statuses": {
-        "error": 3,
+        "error": 4,
         "success": 1
       },
       "median_seconds": 12.752,
@@ -1071,10 +1073,10 @@
       "model": "gemini-3.7-flash",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 1,
       "statuses": {
-        "error": 2,
+        "error": 3,
         "timeout": 1,
         "success": 1
       },
@@ -1087,10 +1089,10 @@
       "model": "gemini-3.7-flash",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 0,
       "statuses": {
-        "error": 6,
+        "error": 7,
         "timeout": 1
       },
       "median_seconds": null,
@@ -1102,10 +1104,10 @@
       "model": "gemini-3.8-flash",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 6,
+      "attempts": 7,
       "successes": 1,
       "statuses": {
-        "error": 5,
+        "error": 6,
         "success": 1
       },
       "median_seconds": 5.149,
@@ -1117,10 +1119,10 @@
       "model": "gemini-3.8-flash",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 7,
+      "attempts": 8,
       "successes": 1,
       "statuses": {
-        "error": 4,
+        "error": 5,
         "timeout": 1,
         "quota_model_limit": 1,
         "success": 1
@@ -1134,28 +1136,29 @@
       "model": "gemini-3.8-flash",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 6,
-      "successes": 0,
+      "attempts": 7,
+      "successes": 1,
       "statuses": {
         "error": 5,
-        "quota_model_limit": 1
+        "quota_model_limit": 1,
+        "success": 1
       },
-      "median_seconds": null,
-      "p90_seconds": null,
-      "max_seconds": null,
+      "median_seconds": 4.228,
+      "p90_seconds": 4.228,
+      "max_seconds": 4.228,
       "first_text_median_seconds": null
     },
     {
       "model": "gemini-3.8-flash",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 5,
-      "successes": 3,
+      "attempts": 6,
+      "successes": 4,
       "statuses": {
-        "success": 3,
+        "success": 4,
         "error": 2
       },
-      "median_seconds": 15.463,
+      "median_seconds": 10.977,
       "p90_seconds": 16.436,
       "max_seconds": 16.436,
       "first_text_median_seconds": null
@@ -1164,48 +1167,62 @@
       "model": "gemini-3.8-live",
       "track": "live_agent_input_stt",
       "input": "long_voice",
-      "attempts": 4,
-      "successes": 4,
-      "statuses": {
-        "success": 4
-      },
-      "median_seconds": 180.815,
-      "p90_seconds": 181.026,
-      "max_seconds": 181.026,
-      "first_text_median_seconds": 180.077
-    },
-    {
-      "model": "gemini-3.8-live",
-      "track": "live_agent_input_stt",
-      "input": "short_voice",
       "attempts": 5,
       "successes": 5,
       "statuses": {
         "success": 5
       },
-      "median_seconds": 4.005,
-      "p90_seconds": 4.191,
-      "max_seconds": 4.191,
-      "first_text_median_seconds": 3.311
+      "median_seconds": 180.9,
+      "p90_seconds": 181.026,
+      "max_seconds": 181.026,
+      "first_text_median_seconds": 180.14
     },
     {
       "model": "gemini-3.8-live",
       "track": "live_agent_input_stt",
-      "input": "video_note",
+      "input": "short_voice",
       "attempts": 6,
       "successes": 6,
       "statuses": {
         "success": 6
       },
-      "median_seconds": 30.816,
+      "median_seconds": 3.979,
+      "p90_seconds": 4.191,
+      "max_seconds": 4.191,
+      "first_text_median_seconds": 3.337
+    },
+    {
+      "model": "gemini-3.8-live",
+      "track": "live_agent_input_stt",
+      "input": "video_note",
+      "attempts": 7,
+      "successes": 7,
+      "statuses": {
+        "success": 7
+      },
+      "median_seconds": 30.727,
       "p90_seconds": 31.03,
       "max_seconds": 31.03,
-      "first_text_median_seconds": 30.106
+      "first_text_median_seconds": 30.136
     },
     {
       "model": "gemini-3.8-live-extended-thinking",
       "track": "live_agent_input_stt",
       "input": "long_voice",
+      "attempts": 8,
+      "successes": 0,
+      "statuses": {
+        "error": 8
+      },
+      "median_seconds": null,
+      "p90_seconds": null,
+      "max_seconds": null,
+      "first_text_median_seconds": null
+    },
+    {
+      "model": "gemini-3.8-live-extended-thinking",
+      "track": "live_agent_input_stt",
+      "input": "short_voice",
       "attempts": 7,
       "successes": 0,
       "statuses": {
@@ -1219,7 +1236,7 @@
     {
       "model": "gemini-3.8-live-extended-thinking",
       "track": "live_agent_input_stt",
-      "input": "short_voice",
+      "input": "video_note",
       "attempts": 6,
       "successes": 0,
       "statuses": {
@@ -1231,20 +1248,6 @@
       "first_text_median_seconds": null
     },
     {
-      "model": "gemini-3.8-live-extended-thinking",
-      "track": "live_agent_input_stt",
-      "input": "video_note",
-      "attempts": 5,
-      "successes": 0,
-      "statuses": {
-        "error": 5
-      },
-      "median_seconds": null,
-      "p90_seconds": null,
-      "max_seconds": null,
-      "first_text_median_seconds": null
-    },
-    {
       "model": "gemini-4-argon",
       "track": "json_audio_control",
       "input": "video_note",
@@ -1290,10 +1293,10 @@
       "model": "gemini-4-argon",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 1,
+      "attempts": 2,
       "successes": 0,
       "statuses": {
-        "quota_model_zero": 1
+        "quota_model_zero": 2
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -1304,14 +1307,14 @@
       "model": "gemini-flash-latest",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 3,
-      "successes": 1,
+      "attempts": 4,
+      "successes": 2,
       "statuses": {
-        "success": 1,
+        "success": 2,
         "quota_model_limit": 1,
         "error": 1
       },
-      "median_seconds": 17.315,
+      "median_seconds": 13.207,
       "p90_seconds": 17.315,
       "max_seconds": 17.315,
       "first_text_median_seconds": null
@@ -1320,10 +1323,10 @@
       "model": "gemini-flash-latest",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 1,
       "statuses": {
-        "error": 2,
+        "error": 3,
         "timeout": 1,
         "success": 1
       },
@@ -1336,10 +1339,10 @@
       "model": "gemini-flash-latest",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 4,
+      "attempts": 5,
       "successes": 0,
       "statuses": {
-        "error": 4
+        "error": 5
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -1350,13 +1353,13 @@
       "model": "gemini-flash-latest",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 6,
+      "attempts": 7,
       "successes": 2,
       "statuses": {
         "timeout": 1,
         "success": 2,
         "quota_model_limit": 1,
-        "error": 2
+        "error": 3
       },
       "median_seconds": 5.248,
       "p90_seconds": 5.283,
@@ -1367,11 +1370,11 @@
       "model": "gemini-flash-lite-latest",
       "track": "json_audio_control",
       "input": "video_note",
-      "attempts": 6,
+      "attempts": 7,
       "successes": 5,
       "statuses": {
         "success": 5,
-        "error": 1
+        "error": 2
       },
       "median_seconds": 1.995,
       "p90_seconds": 5.608,
@@ -1382,13 +1385,13 @@
       "model": "gemini-flash-lite-latest",
       "track": "json_original",
       "input": "long_voice",
-      "attempts": 6,
-      "successes": 5,
+      "attempts": 7,
+      "successes": 6,
       "statuses": {
-        "success": 5,
+        "success": 6,
         "error": 1
       },
-      "median_seconds": 5.677,
+      "median_seconds": 6.268,
       "p90_seconds": 13.136,
       "max_seconds": 13.136,
       "first_text_median_seconds": null
@@ -1397,12 +1400,12 @@
       "model": "gemini-flash-lite-latest",
       "track": "json_original",
       "input": "short_voice",
-      "attempts": 4,
-      "successes": 4,
+      "attempts": 5,
+      "successes": 5,
       "statuses": {
-        "success": 4
+        "success": 5
       },
-      "median_seconds": 1.542,
+      "median_seconds": 1.688,
       "p90_seconds": 9.131,
       "max_seconds": 9.131,
       "first_text_median_seconds": null
@@ -1411,11 +1414,11 @@
       "model": "gemini-flash-lite-latest",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 8,
+      "attempts": 9,
       "successes": 7,
       "statuses": {
         "success": 7,
-        "error": 1
+        "error": 2
       },
       "median_seconds": 1.974,
       "p90_seconds": 7.209,
@@ -1465,13 +1468,27 @@
       "first_text_median_seconds": null
     },
     {
-      "model": "gemini-omni-flash-preview",
-      "track": "json_audio_control",
+      "model": "gemini-omni-1.1-flash",
+      "track": "json_original",
       "input": "video_note",
       "attempts": 1,
       "successes": 0,
       "statuses": {
         "quota_model_zero": 1
+      },
+      "median_seconds": null,
+      "p90_seconds": null,
+      "max_seconds": null,
+      "first_text_median_seconds": null
+    },
+    {
+      "model": "gemini-omni-flash-preview",
+      "track": "json_audio_control",
+      "input": "video_note",
+      "attempts": 2,
+      "successes": 0,
+      "statuses": {
+        "quota_model_zero": 2
       },
       "median_seconds": null,
       "p90_seconds": null,
@@ -1566,10 +1583,10 @@
       "model": "gemini-pro-latest",
       "track": "json_original",
       "input": "video_note",
-      "attempts": 2,
+      "attempts": 3,
       "successes": 0,
       "statuses": {
-        "quota_model_zero": 2
+        "quota_model_zero": 3
       },
       "median_seconds": null,
       "p90_seconds": null,
