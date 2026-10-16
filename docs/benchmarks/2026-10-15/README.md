@@ -3,8 +3,8 @@
 **ПРОМЕЖУТОЧНЫЙ ОТЧЁТ — эксперимент продолжается**
 
 Плановое окно UTC: `2026-10-15T15:55:34+00:00` → `2026-10-16T15:55:34+00:00`. 24 часа, каждые 2 часа.
-Циклы с записанными строками: **5 / 12**. Строки: **545 / 1308**.
-Реальные попытки: **269**; успешные: **150**; пропущенные защитой: **276**.
+Циклы с записанными строками: **6 / 12**. Строки: **654 / 1308**.
+Реальные попытки: **346**; успешные: **193**; пропущенные защитой: **308**.
 
 ## Что измеряется
 
@@ -35,105 +35,108 @@
 
 | Модель | Трек | Образец | Успех/попытки | median, s | p90, s | max, s | first text median, s |
 |---|---|---|---:|---:|---:|---:|---:|
-| `gemini-2.5-flash` | json_audio_control | video_note | 3/5 | 6.149 | 6.997 | 6.997 | — |
-| `gemini-2.5-flash` | json_original | long_voice | 1/1 | 24.531 | 24.531 | 24.531 | — |
-| `gemini-2.5-flash` | json_original | short_voice | 2/3 | 4.703 | 4.753 | 4.753 | — |
-| `gemini-2.5-flash` | json_original | video_note | 1/1 | 4.875 | 4.875 | 4.875 | — |
-| `gemini-2.5-flash-lite` | json_audio_control | video_note | 3/3 | 1.761 | 2.082 | 2.082 | — |
-| `gemini-2.5-flash-lite` | json_original | long_voice | 1/1 | 6.503 | 6.503 | 6.503 | — |
-| `gemini-2.5-flash-lite` | json_original | short_voice | 2/2 | 1.615 | 1.624 | 1.624 | — |
-| `gemini-2.5-flash-lite` | json_original | video_note | 4/4 | 4.601 | 6.614 | 6.614 | — |
-| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | long_voice | 2/2 | 182.262 | 183.564 | 183.564 | 4.595 |
-| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | short_voice | 3/3 | 5.886 | 6.170 | 6.170 | 3.131 |
-| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | video_note | 4/4 | 31.982 | 33.059 | 33.059 | 2.949 |
-| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | long_voice | 2/2 | 194.793 | 198.674 | 198.674 | 4.624 |
-| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | short_voice | 3/3 | 6.569 | 6.612 | 6.612 | 3.368 |
-| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | video_note | 2/2 | 34.091 | 35.802 | 35.802 | 2.966 |
-| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | long_voice | 1/1 | 181.389 | 181.389 | 181.389 | 4.490 |
-| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | short_voice | 4/4 | 6.758 | 7.862 | 7.862 | 3.106 |
-| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | video_note | 3/3 | 32.926 | 33.488 | 33.488 | 3.063 |
-| `gemini-2.5-pro` | json_audio_control | video_note | 0/4 | — | — | — | — |
-| `gemini-2.5-pro` | json_original | long_voice | 0/2 | — | — | — | — |
-| `gemini-2.5-pro` | json_original | short_voice | 0/2 | — | — | — | — |
-| `gemini-2.5-pro` | json_original | video_note | 0/4 | — | — | — | — |
-| `gemini-3-flash-preview` | json_audio_control | video_note | 1/3 | 14.166 | 14.166 | 14.166 | — |
-| `gemini-3-flash-preview` | json_original | long_voice | 1/2 | 7.239 | 7.239 | 7.239 | — |
-| `gemini-3-flash-preview` | json_original | short_voice | 2/3 | 8.548 | 13.761 | 13.761 | — |
-| `gemini-3-flash-preview` | json_original | video_note | 2/2 | 16.227 | 19.148 | 19.148 | — |
-| `gemini-3.1-flash-lite` | json_audio_control | video_note | 4/4 | 2.224 | 3.578 | 3.578 | — |
-| `gemini-3.1-flash-lite` | json_original | long_voice | 4/4 | 5.376 | 13.567 | 13.567 | — |
-| `gemini-3.1-flash-lite` | json_original | short_voice | 3/3 | 1.508 | 6.884 | 6.884 | — |
-| `gemini-3.1-flash-lite` | json_original | video_note | 3/4 | 3.969 | 11.218 | 11.218 | — |
-| `gemini-3.1-flash-lite-preview` | json_audio_control | video_note | 3/3 | 2.043 | 10.914 | 10.914 | — |
-| `gemini-3.1-flash-lite-preview` | json_original | long_voice | 2/3 | 4.941 | 5.105 | 5.105 | — |
-| `gemini-3.1-flash-lite-preview` | json_original | short_voice | 3/3 | 1.718 | 2.226 | 2.226 | — |
-| `gemini-3.1-flash-lite-preview` | json_original | video_note | 4/4 | 1.955 | 2.369 | 2.369 | — |
-| `gemini-3.1-flash-live-preview` | live_agent_input_stt | long_voice | 3/3 | 181.105 | 181.118 | 181.118 | 180.282 |
-| `gemini-3.1-flash-live-preview` | live_agent_input_stt | short_voice | 3/3 | 3.939 | 4.145 | 4.145 | 3.253 |
-| `gemini-3.1-flash-live-preview` | live_agent_input_stt | video_note | 3/3 | 30.907 | 31.348 | 31.348 | 29.967 |
+| `gemini-2.5-flash` | json_audio_control | video_note | 4/6 | 6.280 | 6.997 | 6.997 | — |
+| `gemini-2.5-flash` | json_original | long_voice | 2/2 | 20.860 | 24.531 | 24.531 | — |
+| `gemini-2.5-flash` | json_original | short_voice | 3/4 | 4.652 | 4.753 | 4.753 | — |
+| `gemini-2.5-flash` | json_original | video_note | 2/2 | 5.354 | 5.832 | 5.832 | — |
+| `gemini-2.5-flash-lite` | json_audio_control | video_note | 4/4 | 1.780 | 2.082 | 2.082 | — |
+| `gemini-2.5-flash-lite` | json_original | long_voice | 2/2 | 5.746 | 6.503 | 6.503 | — |
+| `gemini-2.5-flash-lite` | json_original | short_voice | 3/3 | 1.624 | 1.958 | 1.958 | — |
+| `gemini-2.5-flash-lite` | json_original | video_note | 5/5 | 4.009 | 6.614 | 6.614 | — |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | long_voice | 3/3 | 180.963 | 183.564 | 183.564 | 4.528 |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | short_voice | 4/4 | 5.603 | 6.170 | 6.170 | 3.103 |
+| `gemini-2.5-flash-native-audio-latest` | live_agent_input_stt | video_note | 5/5 | 31.807 | 33.059 | 33.059 | 2.907 |
+| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | long_voice | 3/3 | 190.913 | 198.674 | 198.674 | 4.516 |
+| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | short_voice | 4/4 | 6.157 | 6.612 | 6.612 | 3.397 |
+| `gemini-2.5-flash-native-audio-preview-09-2025` | live_agent_input_stt | video_note | 3/3 | 32.381 | 35.802 | 35.802 | 2.911 |
+| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | long_voice | 2/2 | 180.545 | 181.389 | 181.389 | 4.462 |
+| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | short_voice | 5/5 | 6.697 | 7.862 | 7.862 | 3.097 |
+| `gemini-2.5-flash-native-audio-preview-12-2025` | live_agent_input_stt | video_note | 4/4 | 32.541 | 33.488 | 33.488 | 3.006 |
+| `gemini-2.5-pro` | json_audio_control | video_note | 0/5 | — | — | — | — |
+| `gemini-2.5-pro` | json_original | long_voice | 0/3 | — | — | — | — |
+| `gemini-2.5-pro` | json_original | short_voice | 0/3 | — | — | — | — |
+| `gemini-2.5-pro` | json_original | video_note | 0/5 | — | — | — | — |
+| `gemini-3-flash-preview` | json_audio_control | video_note | 2/4 | 8.825 | 14.166 | 14.166 | — |
+| `gemini-3-flash-preview` | json_original | long_voice | 2/3 | 7.647 | 8.056 | 8.056 | — |
+| `gemini-3-flash-preview` | json_original | short_voice | 3/4 | 3.493 | 13.761 | 13.761 | — |
+| `gemini-3-flash-preview` | json_original | video_note | 3/3 | 13.306 | 19.148 | 19.148 | — |
+| `gemini-3.1-flash-lite` | json_audio_control | video_note | 4/5 | 2.224 | 3.578 | 3.578 | — |
+| `gemini-3.1-flash-lite` | json_original | long_voice | 4/5 | 5.376 | 13.567 | 13.567 | — |
+| `gemini-3.1-flash-lite` | json_original | short_voice | 3/4 | 1.508 | 6.884 | 6.884 | — |
+| `gemini-3.1-flash-lite` | json_original | video_note | 3/5 | 3.969 | 11.218 | 11.218 | — |
+| `gemini-3.1-flash-lite-preview` | json_audio_control | video_note | 3/4 | 2.043 | 10.914 | 10.914 | — |
+| `gemini-3.1-flash-lite-preview` | json_original | long_voice | 2/4 | 4.941 | 5.105 | 5.105 | — |
+| `gemini-3.1-flash-lite-preview` | json_original | short_voice | 3/4 | 1.718 | 2.226 | 2.226 | — |
+| `gemini-3.1-flash-lite-preview` | json_original | video_note | 4/5 | 1.955 | 2.369 | 2.369 | — |
+| `gemini-3.1-flash-live-preview` | live_agent_input_stt | long_voice | 4/4 | 181.075 | 181.118 | 181.118 | 180.252 |
+| `gemini-3.1-flash-live-preview` | live_agent_input_stt | short_voice | 4/4 | 3.928 | 4.145 | 4.145 | 3.228 |
+| `gemini-3.1-flash-live-preview` | live_agent_input_stt | video_note | 4/4 | 30.888 | 31.348 | 31.348 | 29.935 |
 | `gemini-3.1-pro-preview` | json_audio_control | video_note | 0/1 | — | — | — | — |
-| `gemini-3.1-pro-preview` | json_original | long_voice | 0/2 | — | — | — | — |
+| `gemini-3.1-pro-preview` | json_original | long_voice | 0/3 | — | — | — | — |
 | `gemini-3.1-pro-preview` | json_original | video_note | 0/1 | — | — | — | — |
-| `gemini-3.1-pro-preview-customtools` | json_audio_control | video_note | 0/2 | — | — | — | — |
+| `gemini-3.1-pro-preview-customtools` | json_audio_control | video_note | 0/3 | — | — | — | — |
 | `gemini-3.1-pro-preview-customtools` | json_original | long_voice | 0/1 | — | — | — | — |
 | `gemini-3.1-pro-preview-customtools` | json_original | video_note | 0/2 | — | — | — | — |
 | `gemini-3.5-flash` | json_audio_control | video_note | 1/1 | 10.131 | 10.131 | 10.131 | — |
 | `gemini-3.5-flash` | json_original | long_voice | 0/1 | — | — | — | — |
-| `gemini-3.5-flash` | json_original | short_voice | 1/1 | 9.327 | 9.327 | 9.327 | — |
-| `gemini-3.5-flash` | json_original | video_note | 1/2 | 5.789 | 5.789 | 5.789 | — |
-| `gemini-3.5-flash-lite` | json_audio_control | video_note | 5/5 | 2.059 | 6.804 | 6.804 | — |
-| `gemini-3.5-flash-lite` | json_original | long_voice | 3/3 | 4.710 | 7.052 | 7.052 | — |
-| `gemini-3.5-flash-lite` | json_original | short_voice | 2/2 | 1.585 | 1.806 | 1.806 | — |
-| `gemini-3.5-flash-lite` | json_original | video_note | 3/3 | 2.834 | 6.877 | 6.877 | — |
+| `gemini-3.5-flash` | json_original | short_voice | 1/2 | 9.327 | 9.327 | 9.327 | — |
+| `gemini-3.5-flash` | json_original | video_note | 2/3 | 5.153 | 5.789 | 5.789 | — |
+| `gemini-3.5-flash-lite` | json_audio_control | video_note | 6/6 | 2.110 | 6.804 | 6.804 | — |
+| `gemini-3.5-flash-lite` | json_original | long_voice | 4/4 | 4.342 | 7.052 | 7.052 | — |
+| `gemini-3.5-flash-lite` | json_original | short_voice | 3/3 | 1.526 | 1.806 | 1.806 | — |
+| `gemini-3.5-flash-lite` | json_original | video_note | 4/4 | 2.721 | 6.877 | 6.877 | — |
 | `gemini-3.5-transcribe` | file_smart_pipeline | long_voice | 0/2 | — | — | — | — |
 | `gemini-3.5-transcribe` | file_smart_pipeline | short_voice | 0/2 | — | — | — | — |
 | `gemini-3.5-transcribe` | file_smart_pipeline | video_note | 2/4 | 11.352 | 14.052 | 14.052 | — |
-| `gemini-3.5-transcribe` | file_verbatim_stt | long_voice | 1/2 | 7.705 | 7.705 | 7.705 | — |
-| `gemini-3.5-transcribe` | file_verbatim_stt | short_voice | 4/4 | 10.428 | 14.869 | 14.869 | — |
-| `gemini-3.5-transcribe` | file_verbatim_stt | video_note | 2/3 | 6.771 | 7.380 | 7.380 | — |
-| `gemini-3.5-transcribe-live` | live_burst_experimental | long_voice | 0/5 | — | — | — | — |
-| `gemini-3.5-transcribe-live` | live_burst_experimental | short_voice | 0/3 | — | — | — | — |
-| `gemini-3.5-transcribe-live` | live_burst_experimental | video_note | 3/3 | 1.523 | 1.646 | 1.646 | 1.160 |
+| `gemini-3.5-transcribe` | file_verbatim_stt | long_voice | 2/3 | 8.710 | 9.716 | 9.716 | — |
+| `gemini-3.5-transcribe` | file_verbatim_stt | short_voice | 5/5 | 6.342 | 14.869 | 14.869 | — |
+| `gemini-3.5-transcribe` | file_verbatim_stt | video_note | 3/4 | 7.380 | 8.002 | 8.002 | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | long_voice | 0/6 | — | — | — | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | short_voice | 0/4 | — | — | — | — |
+| `gemini-3.5-transcribe-live` | live_burst_experimental | video_note | 4/4 | 1.507 | 1.646 | 1.646 | 1.180 |
 | `gemini-3.5-transcribe-live` | live_production_pipeline | long_voice | 1/2 | 186.202 | 186.202 | 186.202 | 3.883 |
 | `gemini-3.5-transcribe-live` | live_production_pipeline | short_voice | 0/3 | — | — | — | — |
 | `gemini-3.5-transcribe-live` | live_production_pipeline | video_note | 0/3 | — | — | — | — |
-| `gemini-3.5-transcribe-live` | live_smart_stt | long_voice | 4/4 | 178.538 | 178.783 | 178.783 | 3.819 |
-| `gemini-3.5-transcribe-live` | live_smart_stt | short_voice | 4/4 | 3.226 | 3.278 | 3.278 | 2.348 |
-| `gemini-3.5-transcribe-live` | live_smart_stt | video_note | 0/2 | — | — | — | — |
-| `gemini-3.6-flash` | json_audio_control | video_note | 1/3 | 4.831 | 4.831 | 4.831 | — |
-| `gemini-3.6-flash` | json_original | long_voice | 1/4 | 8.475 | 8.475 | 8.475 | — |
+| `gemini-3.5-transcribe-live` | live_smart_stt | long_voice | 5/5 | 178.506 | 178.783 | 178.783 | 3.815 |
+| `gemini-3.5-transcribe-live` | live_smart_stt | short_voice | 5/5 | 3.198 | 3.278 | 3.278 | 2.340 |
+| `gemini-3.5-transcribe-live` | live_smart_stt | video_note | 0/3 | — | — | — | — |
+| `gemini-3.6-flash` | json_audio_control | video_note | 2/4 | 4.184 | 4.831 | 4.831 | — |
+| `gemini-3.6-flash` | json_original | long_voice | 1/5 | 8.475 | 8.475 | 8.475 | — |
 | `gemini-3.6-flash` | json_original | short_voice | 0/2 | — | — | — | — |
 | `gemini-3.6-flash` | json_original | video_note | 0/2 | — | — | — | — |
-| `gemini-3.7-flash` | json_audio_control | video_note | 0/3 | — | — | — | — |
-| `gemini-3.7-flash` | json_original | long_voice | 1/3 | 12.752 | 12.752 | 12.752 | — |
-| `gemini-3.7-flash` | json_original | short_voice | 0/2 | — | — | — | — |
-| `gemini-3.7-flash` | json_original | video_note | 0/4 | — | — | — | — |
-| `gemini-3.8-flash` | json_audio_control | video_note | 1/3 | 5.149 | 5.149 | 5.149 | — |
-| `gemini-3.8-flash` | json_original | long_voice | 0/3 | — | — | — | — |
-| `gemini-3.8-flash` | json_original | short_voice | 0/3 | — | — | — | — |
+| `gemini-3.7-flash` | json_audio_control | video_note | 0/4 | — | — | — | — |
+| `gemini-3.7-flash` | json_original | long_voice | 1/4 | 12.752 | 12.752 | 12.752 | — |
+| `gemini-3.7-flash` | json_original | short_voice | 0/3 | — | — | — | — |
+| `gemini-3.7-flash` | json_original | video_note | 0/5 | — | — | — | — |
+| `gemini-3.8-flash` | json_audio_control | video_note | 1/4 | 5.149 | 5.149 | 5.149 | — |
+| `gemini-3.8-flash` | json_original | long_voice | 0/4 | — | — | — | — |
+| `gemini-3.8-flash` | json_original | short_voice | 0/4 | — | — | — | — |
 | `gemini-3.8-flash` | json_original | video_note | 3/3 | 15.463 | 16.436 | 16.436 | — |
-| `gemini-3.8-live` | live_agent_input_stt | long_voice | 2/2 | 180.879 | 181.026 | 181.026 | 180.198 |
-| `gemini-3.8-live` | live_agent_input_stt | short_voice | 2/2 | 4.095 | 4.186 | 4.186 | 3.417 |
-| `gemini-3.8-live` | live_agent_input_stt | video_note | 3/3 | 30.722 | 31.030 | 31.030 | 30.136 |
-| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | long_voice | 0/3 | — | — | — | — |
-| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | short_voice | 0/4 | — | — | — | — |
-| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | video_note | 0/2 | — | — | — | — |
+| `gemini-3.8-live` | live_agent_input_stt | long_voice | 3/3 | 180.731 | 181.026 | 181.026 | 180.015 |
+| `gemini-3.8-live` | live_agent_input_stt | short_voice | 3/3 | 4.186 | 4.191 | 4.191 | 3.524 |
+| `gemini-3.8-live` | live_agent_input_stt | video_note | 4/4 | 30.649 | 31.030 | 31.030 | 30.106 |
+| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | long_voice | 0/4 | — | — | — | — |
+| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | short_voice | 0/5 | — | — | — | — |
+| `gemini-3.8-live-extended-thinking` | live_agent_input_stt | video_note | 0/3 | — | — | — | — |
 | `gemini-4-argon` | json_audio_control | video_note | 0/2 | — | — | — | — |
-| `gemini-4-argon` | json_original | long_voice | 0/1 | — | — | — | — |
+| `gemini-4-argon` | json_original | long_voice | 0/2 | — | — | — | — |
 | `gemini-4-argon` | json_original | short_voice | 0/1 | — | — | — | — |
 | `gemini-4-argon` | json_original | video_note | 0/1 | — | — | — | — |
 | `gemini-flash-latest` | json_audio_control | video_note | 1/1 | 17.315 | 17.315 | 17.315 | — |
 | `gemini-flash-latest` | json_original | long_voice | 0/2 | — | — | — | — |
 | `gemini-flash-latest` | json_original | short_voice | 0/2 | — | — | — | — |
-| `gemini-flash-latest` | json_original | video_note | 2/3 | 5.248 | 5.283 | 5.283 | — |
-| `gemini-flash-lite-latest` | json_audio_control | video_note | 4/4 | 3.757 | 5.608 | 5.608 | — |
-| `gemini-flash-lite-latest` | json_original | long_voice | 3/3 | 3.893 | 13.136 | 13.136 | — |
-| `gemini-flash-lite-latest` | json_original | short_voice | 2/2 | 1.542 | 1.688 | 1.688 | — |
-| `gemini-flash-lite-latest` | json_original | video_note | 5/5 | 1.974 | 7.209 | 7.209 | — |
+| `gemini-flash-latest` | json_original | video_note | 2/4 | 5.248 | 5.283 | 5.283 | — |
+| `gemini-flash-lite-latest` | json_audio_control | video_note | 5/5 | 1.995 | 5.608 | 5.608 | — |
+| `gemini-flash-lite-latest` | json_original | long_voice | 4/4 | 4.785 | 13.136 | 13.136 | — |
+| `gemini-flash-lite-latest` | json_original | short_voice | 3/3 | 1.397 | 1.688 | 1.688 | — |
+| `gemini-flash-lite-latest` | json_original | video_note | 6/6 | 1.866 | 7.209 | 7.209 | — |
+| `gemini-omni-1.1-flash` | json_audio_control | video_note | 0/1 | — | — | — | — |
 | `gemini-omni-1.1-flash` | json_original | long_voice | 0/2 | — | — | — | — |
 | `gemini-omni-1.1-flash` | json_original | short_voice | 0/3 | — | — | — | — |
 | `gemini-omni-flash-preview` | json_audio_control | video_note | 0/1 | — | — | — | — |
+| `gemini-omni-flash-preview` | json_original | long_voice | 0/1 | — | — | — | — |
 | `gemini-omni-flash-preview` | json_original | short_voice | 0/4 | — | — | — | — |
+| `gemini-pro-latest` | json_audio_control | video_note | 0/1 | — | — | — | — |
 | `gemini-pro-latest` | json_original | long_voice | 0/2 | — | — | — | — |
 | `gemini-pro-latest` | json_original | short_voice | 0/2 | — | — | — | — |
 | `gemini-pro-latest` | json_original | video_note | 0/1 | — | — | — | — |
@@ -143,21 +146,21 @@
 | Период | Попытки | Успехи |
 |---|---:|---:|
 | day 10:00–20:59 | 127 | 68 |
-| night 21:00–09:59 | 142 | 82 |
+| night 21:00–09:59 | 219 | 125 |
 
 ## Ошибки и покрытие
 
 | Статус | Количество |
 |---|---:|
-| error | 55 |
-| quota_global | 5 |
-| quota_model_limit | 5 |
-| quota_model_zero | 29 |
-| skipped_model_quota | 58 |
-| skipped_quota | 218 |
-| success | 150 |
-| timeout | 13 |
-| unavailable | 12 |
+| error | 72 |
+| quota_global | 6 |
+| quota_model_limit | 9 |
+| quota_model_zero | 35 |
+| skipped_model_quota | 89 |
+| skipped_quota | 219 |
+| success | 193 |
+| timeout | 15 |
+| unavailable | 16 |
 
 ## Данные и воспроизводимость
 
