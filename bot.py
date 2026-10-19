@@ -656,14 +656,20 @@ def remember_context(update: Update) -> None:
         )
 
 
+LOG_COMMAND_NAMES = frozenset({
+    "start", "help", "changelog", "feedback", "myid", "stats", "history", "last_errors",
+    "block", "unblock", "broadcast_changelog", "language", "transcription_type", "stop",
+    "next", "transcription_only", "summary_only", "tldr", "both", "ignore",
+})
+
+
 def extract_command_name(message) -> str | None:
     text = message.text or message.caption or ""
     if not text.startswith("/"):
         return None
     command = text.split(maxsplit=1)[0][1:]
-    if not command:
-        return None
-    return command.split("@", maxsplit=1)[0].lower()
+    name = command.split("@", maxsplit=1)[0].lower()
+    return name if name in LOG_COMMAND_NAMES else "unknown"
 
 
 def is_private_chat(message) -> bool:
@@ -1580,6 +1586,7 @@ class MediaJob:
     current_model_index: int = -1
     current_model_name: str | None = None
     retry_source_id: int | None = None
+    admitted: bool = False
     manager: Any = None
 
 
@@ -1617,12 +1624,18 @@ class JobManager:
         self._retry_sources[source_id] = source_identity
         return True
 
-    def release_retry(self, source_id: int | None) -> None:
-        if source_id is not None:
+    def release_retry(self, source_id: int | None, source_identity: tuple[int, int, str] | None = None) -> None:
+        if source_id is not None and (source_identity is None or self._retry_sources.get(source_id) is source_identity):
             self._retry_sources.pop(source_id, None)
 
     def retry_has_job(self, source_id: int) -> bool:
         return any(getattr(job, "retry_source_id", None) == source_id
+                   for job in [*self.active_jobs.values(), *self.queue])
+
+    def message_has_job(self, message) -> bool:
+        return any(usable_callback_message(job.processing_message)
+                   and job.processing_message.chat.id == message.chat.id
+                   and job.processing_message.message_id == message.message_id
                    for job in [*self.active_jobs.values(), *self.queue])
 
     def allocate_job_id(self) -> int:
@@ -1697,6 +1710,10 @@ class JobManager:
             else:
                 job.status = "rejected"
                 return "rejected"
+
+            # Persist admission on the job even if queue UI awaits are cancelled,
+            # or work finishes before the submitting callback resumes.
+            job.admitted = True
 
         if should_start:
             self._start_job(job)
@@ -3306,6 +3323,34 @@ async def enqueue_retry_processing(
     context: ContextTypes.DEFAULT_TYPE,
     processing_message: Any,
 ) -> str:
+    admission: list[MediaJob] = []
+    try:
+        return await _enqueue_retry_processing(processing, context, processing_message, admission)
+    finally:
+        # Keep the callback's claim throughout recovery. Once admitted, neither
+        # cancellation nor a later UI failure may replace this job's controls.
+        if not admission or not admission[0].admitted:
+            source_id = processing.get("_retry_source_id")
+            if (source_id is not None and processing.get("status") == "failed"
+                    and JOB_MANAGER._retry_sources.get(source_id) is processing.get("_retry_claim")
+                    and not JOB_MANAGER.retry_has_job(source_id)
+                    and not JOB_MANAGER.message_has_job(processing_message)):
+                try:
+                    await safe_edit_text(
+                        processing_message,
+                        "⚠️ Не получилось запустить повтор. Попробуй ещё раз немного позже.",
+                        reply_markup=retry_keyboard(source_id),
+                    )
+                except Exception as error:
+                    logger.warning("RETRY RESTORE FAILED | processing_id=%d | type=%s", source_id, type(error).__name__)
+
+
+async def _enqueue_retry_processing(
+    processing: dict[str, Any],
+    context: ContextTypes.DEFAULT_TYPE,
+    processing_message: Any,
+    admission: list[MediaJob],
+) -> str:
     media_type = str(processing["media_type"])
     duration_seconds = int(processing["duration_seconds"])
     runtime = retry_media_runtime(media_type, duration_seconds)
@@ -3359,6 +3404,7 @@ async def enqueue_retry_processing(
         message_processing_id=message_processing_id,
         retry_source_id=processing.get("_retry_source_id"),
     )
+    admission.append(job)
     return await submit_media_job(job)
 
 
@@ -3398,6 +3444,12 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
             or query.message.chat.id != int(processing["chat_id"])):
         await query.answer("Повтор доступен только в исходном чате.", show_alert=True)
         return
+    # Callback data is user-controlled, unlike the server-supplied message
+    # markup. Require this source's terminal keyboard and an unoccupied target.
+    if (getattr(query.message, "reply_markup", None) != retry_keyboard(source_processing_id)
+            or JOB_MANAGER.message_has_job(query.message)):
+        await query.answer("Эта кнопка не относится к исходной обработке.", show_alert=True)
+        return
     if (processing.get("media_type") not in ("voice", "video")
             or not isinstance(processing.get("telegram_file_id"), str)
             or not processing["telegram_file_id"].strip()
@@ -3421,7 +3473,7 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if not is_admin(user_id) and not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
             await query.answer("Слишком много запросов. Подожди минуту.", show_alert=True)
             return
-        retry_source = dict(processing, _retry_source_id=source_processing_id)
+        retry_source = dict(processing, _retry_source_id=source_processing_id, _retry_claim=identity)
         submit_result = await enqueue_retry_processing(retry_source, context, query.message)
         accepted = submit_result != "rejected"
     except Exception as error:
@@ -3430,7 +3482,7 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     finally:
         if not accepted and not JOB_MANAGER.retry_has_job(source_processing_id):
-            JOB_MANAGER.release_retry(source_processing_id)
+            JOB_MANAGER.release_retry(source_processing_id, identity)
 
     if submit_result == "rejected":
         await query.answer("Очередь заполнена. Попробуй немного позже.", show_alert=True)

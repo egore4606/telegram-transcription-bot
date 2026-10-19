@@ -12,7 +12,11 @@ from test_audit_core import job_fixture, message
 
 
 def callback(data, target=None, user_id=42):
-    query = NS(data=data, message=target or message(), from_user=NS(id=user_id, is_bot=False), answer=AsyncMock())
+    if target is None:
+        target = message()
+        if data.startswith("retry:"):
+            target.reply_markup = bot.retry_keyboard(int(data.split(":")[1]))
+    query = NS(data=data, message=target, from_user=NS(id=user_id, is_bot=False), answer=AsyncMock())
     return NS(callback_query=query)
 
 
