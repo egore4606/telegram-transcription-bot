@@ -13,8 +13,15 @@ The SQLite database contains:
 - pending feedback state;
 - changelog delivery records.
 
-Only media that the bot processes is archived in processing history. Normal text chat is not
-copied into the database, apart from operational state required for features such as feedback.
+Processing history includes accepted media requests and rows rejected by ignore/block policy or
+rate limits. Successful rows retain transcription, summary, raw model output, final replies and
+request metadata; failed attempts retain bounded credential-redacted error text. This is persistent
+user data, not an anonymized metrics database. Normal text chat is not copied wholesale into the
+database, but user/chat metadata, command-rate state and pending-feedback state are retained.
+Protect database files and backups accordingly. No retention deletion is introduced by this audit.
+
+`/stats`, `/history` and `/last_errors` require the configured administrator's **private chat**;
+they refuse group requests before reading global report rows.
 
 ## Database migrations
 
@@ -48,9 +55,17 @@ docker compose logs -f bot
 `save-logs.sh` exports incremental Docker logs to `./logs/`:
 
 - the first run exports the last 24 hours;
-- later runs export only lines after the previous successful run;
+- later runs resume at the previous successful cursor;
 - the state is stored in `./logs/.save-logs-state`;
-- repeated runs on the same day do not duplicate older lines.
+- `flock` serializes export, append and cursor replacement across invocations;
+- the log directory is owner-only and archive/state/lock files are mode `600`;
+- archiving is **at least once**, not exactly once: inclusive second-precision boundaries
+  may overlap, and a crash after append but before cursor replacement may replay a window;
+- a Docker export failure leaves the existing archive and cursor unchanged.
+
+The script requires Bash, GNU `date`, `flock` (util-linux) and Docker Compose. It does not
+delete old archives. Permission hardening covers the directory and the current day's archive;
+older archives inside that owner-only directory are not rewritten.
 
 ```bash
 ./save-logs.sh
@@ -70,6 +85,49 @@ ssh -L 8081:127.0.0.1:8081 user@your-server
 
 Open `http://127.0.0.1:8081` after the tunnel is established. Do not change the host port binding to
 `0.0.0.0` unless a separate authenticated reverse proxy protects it.
+
+Direct `python admin_panel.py` execution defaults to `0.0.0.0` for container compatibility.
+Outside Compose, explicitly set `ADMIN_PANEL_HOST=127.0.0.1` before starting it. The panel
+does not implement authentication; do not expose its listener publicly.
+
+## Reliability boundaries
+
+Graceful PTB shutdown quiesces the in-memory job manager, cancels/drains owned active jobs,
+does not launch queued jobs, and attempts terminal database bookkeeping before closing SDK
+clients. Abrupt crashes are different: historical `queued`/`started` rows can remain, and
+the queue is intentionally not restored/replayed after restart. Recovery needs an explicit
+process-ownership policy; this audit does not rewrite old rows.
+
+Retry callbacks enforce the original chat, owner/admin identity, source/clicker ignore policy,
+media rate limit (with the existing admin exemption) and bounded in-memory source claims.
+Claims prevent overlapping retries of the same media within one process; they are not a
+durable cross-process lock. Queue-position edits can still race active-status edits cosmetically.
+
+Final delivery propagates a failed follow-up chunk and does not record success for an incomplete
+reply. Native-draft fallback resumes at the first unconfirmed chunk. A send timeout can mean
+Telegram accepted the message but the acknowledgement was lost: exactly-once delivery is not
+promised. Feedback pending state clears only after all chunks are confirmed, so retrying a
+partially delivered feedback can also duplicate its confirmed prefix.
+
+ffmpeg conversion permits only `file,pipe` protocols, drains bounded reads concurrently, caps
+16 kHz mono signed-16 decoded output at one hour plus WAV-header allowance, and limits conversion
+to 120 seconds. Over-limit output is rejected, never silently transcribed as truncated audio.
+Telegram download remains buffered; if size metadata is absent, the post-download limit cannot
+prevent all initial buffering. Temporary upload files are unlinked even when remote cleanup
+fails/cancels. Remote deletion is best effort with a five-second timeout; an upload that times
+out before returning a handle can leave an unidentifiable remote orphan.
+
+Routine application logs exclude transcripts, feedback text, names, chat titles, language
+settings, raw Updates and raw exception tracebacks. Operational identifiers and error classes
+remain. Newly stored errors redact configured credential strings and are bounded; this is not
+general PII scrubbing of arbitrary SDK exception text, nor a cleanup of existing historical data.
+Unicode delivery uses conservative UTF-16 budgets including HTML markup/entities. Free-form
+language/style settings remain supported; long existing values are escaped and split, not truncated.
+
+Model order and quota policy are unchanged: quota exhaustion tries configured keys and then
+aborts, whereas overload/schema failures can move through the existing model chain. No live
+Telegram/Gemini API or historical benchmark is validated by offline tests. See
+[`AUDIT_OFFLINE_SAFETY.md`](AUDIT_OFFLINE_SAFETY.md) for scope, evidence and deferrals.
 
 ## Updating a GHCR deployment
 
