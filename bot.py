@@ -3,12 +3,15 @@ import base64
 import html
 import json
 import logging
+import math
 import os
 import re
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 
 from google import genai
@@ -16,7 +19,7 @@ from google.genai import errors as genai_errors, types
 import websockets
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from storage import DEFAULT_TRANSCRIPTION_TYPE, Storage, utc_now
@@ -51,6 +54,9 @@ MODEL_OVERLOAD_RETRY_DELAY = 5
 MODEL_REQUEST_TIMEOUT = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "40"))
 GEMINI_TRANSCRIBE_LIVE_MAX_SECONDS = 10 * 60
 GEMINI_TRANSCRIBE_FILE_MAX_SECONDS = 60 * 60
+MAX_DECODED_AUDIO_BYTES = GEMINI_TRANSCRIBE_FILE_MAX_SECONDS * 16000 * 2 + 4096
+FFMPEG_TIMEOUT_SECONDS = 120
+REMOTE_FILE_CLEANUP_TIMEOUT = 5
 GEMINI_TRANSCRIBE_MODELS = {
     "gemini-3.5-transcribe",
     "gemini-3.5-transcribe-live",
@@ -468,8 +474,15 @@ def is_media_too_large(file_size_bytes: int | None) -> bool:
     return file_size_bytes is not None and file_size_bytes > MAX_MEDIA_BYTES
 
 
-def shorten_error(error: Exception, limit: int = 1000) -> str:
-    return str(error).strip()[:limit]
+def sanitize_error_text(text: str, limit: int = 1000) -> str:
+    secrets = {value for value in (TELEGRAM_TOKEN, GEMINI_API_KEY, GEMINI_API_KEY_2, *gemini_api_keys) if value}
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
+    return text.strip()[:limit]
+
+
+def shorten_error(error: BaseException, limit: int = 1000) -> str:
+    return sanitize_error_text(f"{type(error).__name__}: {error}", limit)
 
 
 def format_duration(seconds: int) -> str:
@@ -589,7 +602,7 @@ def format_history_entry(entry: dict[str, object]) -> str:
 
 
 def format_last_error_entry(entry: dict[str, object]) -> str:
-    error_text = shorten_text(str(entry.get("attempt_error_text") or "-"))
+    error_text = shorten_text(sanitize_error_text(str(entry.get("attempt_error_text") or "-")))
     return (
         f"<b>Attempt #{entry['attempt_id']}</b> — {html.escape(format_timestamp(entry['attempt_started_at']))}\n"
         f"🤖 <code>{html.escape(str(entry['model_name']))}</code> | try {entry['attempt_no']} | "
@@ -643,14 +656,20 @@ def remember_context(update: Update) -> None:
         )
 
 
+LOG_COMMAND_NAMES = frozenset({
+    "start", "help", "changelog", "feedback", "myid", "stats", "history", "last_errors",
+    "block", "unblock", "broadcast_changelog", "language", "transcription_type", "stop",
+    "next", "transcription_only", "summary_only", "tldr", "both", "ignore",
+})
+
+
 def extract_command_name(message) -> str | None:
     text = message.text or message.caption or ""
     if not text.startswith("/"):
         return None
     command = text.split(maxsplit=1)[0][1:]
-    if not command:
-        return None
-    return command.split("@", maxsplit=1)[0].lower()
+    name = command.split("@", maxsplit=1)[0].lower()
+    return name if name in LOG_COMMAND_NAMES else "unknown"
 
 
 def is_private_chat(message) -> bool:
@@ -662,7 +681,7 @@ def is_group_chat(message) -> bool:
 
 
 async def is_group_admin_for_message(message) -> bool:
-    if not is_group_chat(message):
+    if not usable_human_message(message) or not is_group_chat(message):
         return False
     member = await message.chat.get_member(message.from_user.id)
     return member.status in ("administrator", "creator")
@@ -679,7 +698,7 @@ async def should_skip_command_rate_limit(message, command_name: str) -> bool:
                 "COMMAND RATE ADMIN CHECK FAILED | chat=%d | user=%d | error=%s",
                 message.chat.id,
                 message.from_user.id,
-                error,
+                type(error).__name__,
             )
     return False
 
@@ -688,8 +707,8 @@ async def guard_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
-    if message is None or user is None or chat is None:
-        return
+    if not usable_human_message(message) or user is None or chat is None:
+        raise ApplicationHandlerStop
 
     remember_context(update)
     command_name = extract_command_name(message)
@@ -789,6 +808,9 @@ def parse_structured_response(raw: str) -> tuple[str, str] | None:
             continue
 
         normalized_keys = {str(key).strip().casefold(): value for key, value in parsed.items()}
+        if any(not isinstance(normalized_keys[key], str)
+               for key in ("transcription", "transcript", "summary") if key in normalized_keys):
+            continue
         transcription = normalize_model_field(
             normalized_keys.get("transcription", normalized_keys.get("transcript"))
         )
@@ -863,7 +885,17 @@ def normalize_model_field(value: object) -> str:
         return ""
     if isinstance(value, str):
         return value.strip()
-    return str(value).strip()
+    raise InvalidStructuredResponse("non-string model field")
+
+
+def validate_structured_response(raw: str, mode: str) -> tuple[str, str]:
+    sections = parse_structured_response(raw)
+    if sections is not None:
+        transcription, summary = sections
+        if ((mode not in ("both", "transcription_only") or transcription)
+                and (mode not in ("both", "summary_only", "tldr") or summary)):
+            return sections
+    raise InvalidStructuredResponse("invalid_structured_response: required output is missing or invalid")
 
 
 def format_response_sections(transcription: str, summary: str, mode: str) -> str:
@@ -887,41 +919,39 @@ def format_response(raw: str, mode: str) -> str:
     return format_response_sections(transcription, summary, mode)
 
 
+def text_units(text: str) -> int:
+    """Conservative Telegram budget, including markup/entities and UTF-16 pairs."""
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in text)
+
+
 def prefix_length_for_escaped_limit(text: str, max_escaped_len: int) -> int:
     low = 0
     high = len(text)
     while low < high:
         mid = (low + high + 1) // 2
-        if len(html.escape(text[:mid])) <= max_escaped_len:
+        if text_units(html.escape(text[:mid])) <= max_escaped_len:
             low = mid
         else:
             high = mid - 1
-    return max(1, low)
+    if low == 0 and text:
+        raise ValueError("HTML text budget cannot fit one codepoint")
+    return low
 
 
 def split_plain_text_for_html(text: str, max_escaped_len: int) -> list[str]:
-    text = text.strip()
-    if not text:
+    if not text.strip():
         return []
-
     chunks: list[str] = []
-    current = ""
-    for token in re.findall(r"\S+|\s+", text):
-        candidate = f"{current}{token}"
-        if current and len(html.escape(candidate.strip())) > max_escaped_len:
-            chunks.append(current.strip())
-            current = token.lstrip()
-        else:
-            current = candidate
-
-        while current and len(html.escape(current.strip())) > max_escaped_len:
-            cut_at = prefix_length_for_escaped_limit(current, max_escaped_len)
-            chunks.append(current[:cut_at].strip())
-            current = current[cut_at:].lstrip()
-
-    if current.strip():
-        chunks.append(current.strip())
+    while text:
+        cut_at = prefix_length_for_escaped_limit(text, max_escaped_len)
+        chunks.append(text[:cut_at])
+        text = text[cut_at:]
     return chunks
+
+
+async def reply_untrusted_text(message, text: str) -> None:
+    for piece in split_plain_text_for_html(text, TELEGRAM_SAFE_MESSAGE_LIMIT):
+        await safe_reply_text(message, html.escape(piece))
 
 
 def build_section_blocks(icon: str, label: str, text: str) -> list[str]:
@@ -933,7 +963,7 @@ def build_section_blocks(icon: str, label: str, text: str) -> list[str]:
     suffix = "</blockquote>"
     text_limit = min(
         TELEGRAM_SECTION_TEXT_LIMIT,
-        TELEGRAM_SAFE_MESSAGE_LIMIT - max(len(first_prefix), len(next_prefix)) - len(suffix) - 20,
+        TELEGRAM_SAFE_MESSAGE_LIMIT - max(text_units(first_prefix), text_units(next_prefix)) - text_units(suffix) - 20,
     )
     blocks = []
     for index, piece in enumerate(split_plain_text_for_html(text, text_limit)):
@@ -945,11 +975,15 @@ def build_section_blocks(icon: str, label: str, text: str) -> list[str]:
 def pack_html_blocks(header: str, blocks: list[str]) -> list[str]:
     chunks: list[str] = []
     current = header.strip()
+    if text_units(current) > TELEGRAM_SAFE_MESSAGE_LIMIT:
+        raise ValueError("HTML header must be split before packing")
 
     for block in blocks:
+        if text_units(block) > TELEGRAM_SAFE_MESSAGE_LIMIT:
+            raise ValueError("HTML block must be split before packing")
         separator = "\n\n" if current else ""
         candidate = f"{current}{separator}{block}"
-        if current and len(candidate) <= TELEGRAM_SAFE_MESSAGE_LIMIT:
+        if current and text_units(candidate) <= TELEGRAM_SAFE_MESSAGE_LIMIT:
             current = candidate
             continue
         if current:
@@ -970,14 +1004,17 @@ def build_final_reply_chunks(
     mode: str,
     processing_time_text: str,
 ) -> list[str]:
-    header = (
-        f"{media_emoji} <b>{duration_str}</b> — {html.escape(user_name)} "
-        f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>"
-    )
+    header = (f"{media_emoji} <b>{html.escape(duration_str)}</b> — {html.escape(user_name)} "
+              f"<i>(обрабатывалось: {html.escape(processing_time_text)})</i>")
+    if text_units(header) <= TELEGRAM_SAFE_MESSAGE_LIMIT:
+        header_blocks = [header]
+    else:
+        plain_header = f"{media_emoji} {duration_str} — {user_name} (обрабатывалось: {processing_time_text})"
+        header_blocks = [html.escape(piece) for piece in split_plain_text_for_html(plain_header, TELEGRAM_SAFE_MESSAGE_LIMIT)]
 
     if mode == "tldr":
         text = (summary or transcription).strip()
-        text_limit = TELEGRAM_SAFE_MESSAGE_LIMIT - len("💡 ") - 20
+        text_limit = TELEGRAM_SAFE_MESSAGE_LIMIT - text_units("💡 ") - 20
         blocks = [f"💡 {html.escape(piece)}" for piece in split_plain_text_for_html(text, text_limit)]
     else:
         blocks = []
@@ -989,7 +1026,7 @@ def build_final_reply_chunks(
     if not blocks:
         blocks = ["⚠️ Gemini вернул пустой ответ."]
 
-    return pack_html_blocks(header, blocks)
+    return pack_html_blocks("", [*header_blocks, *blocks])
 
 
 def build_final_reply(
@@ -1045,9 +1082,9 @@ def build_help_text(user_id: int) -> str:
     if is_admin(user_id):
         sections.append(
             "\n\n<b>Команды администратора:</b>\n"
-            "/stats — статистика и состояние бота\n"
-            "/history <code>[N]</code> — последние обработки из БД\n"
-            "/last_errors <code>[N]</code> — последние ошибки моделей\n"
+            "/stats — статистика и состояние бота (только в личке)\n"
+            "/history <code>[N]</code> — последние обработки из БД (только в личке)\n"
+            "/last_errors <code>[N]</code> — последние ошибки моделей (только в личке)\n"
             "/block <code>user_id</code> — глобально заблокировать пользователя (только в личке)\n"
             "/unblock <code>user_id</code> — снять глобальный блок и все групповые игноры (только в личке)\n"
             "/broadcast_changelog — разослать текущий changelog в личные чаты"
@@ -1060,7 +1097,7 @@ async def sync_bot_commands(app: Application) -> None:
     try:
         await app.bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
     except Exception as error:
-        logger.warning("BOT COMMAND SYNC ERROR | scope=default | error=%s", error)
+        logger.warning("BOT COMMAND SYNC ERROR | scope=default | type=%s", type(error).__name__)
 
     if ADMIN_USER_ID:
         try:
@@ -1069,7 +1106,7 @@ async def sync_bot_commands(app: Application) -> None:
                 scope=BotCommandScopeChat(chat_id=ADMIN_USER_ID),
             )
         except Exception as error:
-            logger.warning("BOT COMMAND SYNC ERROR | scope=admin | error=%s", error)
+            logger.warning("BOT COMMAND SYNC ERROR | scope=admin | type=%s", type(error).__name__)
 
 
 async def post_init(app: Application) -> None:
@@ -1077,13 +1114,19 @@ async def post_init(app: Application) -> None:
 
 
 async def post_shutdown(app: Application) -> None:
+    await JOB_MANAGER.shutdown()
     results = await asyncio.gather(
         *(client.aclose() for client in gemini_async_clients),
         return_exceptions=True,
     )
     for result in results:
         if isinstance(result, Exception):
-            logger.warning("GEMINI CLIENT CLOSE ERROR | error=%s", result)
+            logger.warning("GEMINI CLIENT CLOSE ERROR | type=%s", type(result).__name__)
+
+
+async def post_stop(app: Application) -> None:
+    # PTB calls this before shutting down its Bot HTTP client.
+    await JOB_MANAGER.shutdown()
 
 
 def feedback_hint_text() -> str:
@@ -1103,13 +1146,15 @@ def unknown_internal_error_text() -> str:
 def get_retry_after_seconds(error: Exception) -> int | None:
     if isinstance(error, RetryAfter):
         try:
-            return max(1, int(float(error.retry_after)))
-        except (TypeError, ValueError):
+            value = error.retry_after
+            seconds = value.total_seconds() if hasattr(value, "total_seconds") else float(value)
+            return max(1, math.ceil(seconds))
+        except (TypeError, ValueError, OverflowError):
             return 1
 
-    match = re.search(r"retry in (\d+) seconds?", str(error).lower())
+    match = re.search(r"retry in (\d+(?:\.\d+)?) seconds?", str(error).lower())
     if match:
-        return max(1, int(match.group(1)))
+        return max(1, math.ceil(float(match.group(1))))
     return None
 
 
@@ -1237,7 +1282,7 @@ def processing_chat_title(processing: dict[str, Any]) -> str:
 async def safe_edit_text(message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     try:
         await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-    except Exception as error:
+    except TelegramError as error:
         if "message is not modified" not in str(error).lower():
             raise
 
@@ -1246,7 +1291,7 @@ async def safe_reply_text(message, text: str, reply_markup: InlineKeyboardMarkup
     try:
         await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         return
-    except Exception as error:
+    except TelegramError as error:
         retry_after = get_retry_after_seconds(error)
         if retry_after is None:
             raise
@@ -1318,14 +1363,17 @@ class ProcessingProgress:
             f"{self.status_text}\n\n"
             f"⏱ <b>Обрабатывается:</b> {html.escape(self.elapsed_text())}"
         )
+        footer = "\n\nДолго обрабатывается? Нажмите <b>«⏭ Другая модель»</b>." if self._live_mode_active else ""
         preview = " ".join(part.strip() for part in (self._live_final_text, self._live_interim_text) if part.strip())
         if preview and not self._native_live_draft:
-            if len(preview) > 1200:
-                preview = f"…{preview[-1199:]}"
-            rendered += f"\n\n📝 <b>Live-транскрипция:</b>\n<blockquote>{html.escape(preview)}</blockquote>"
-        if self._live_mode_active:
-            rendered += "\n\nДолго обрабатывается? Нажмите <b>«⏭ Другая модель»</b>."
-        return rendered
+            prefix = "\n\n📝 <b>Live-транскрипция:</b>\n<blockquote>"
+            suffix = "</blockquote>"
+            available = TELEGRAM_SAFE_MESSAGE_LIMIT - text_units(rendered + prefix + suffix + footer) - 1
+            if available >= 6:
+                cut = min(1200, prefix_length_for_escaped_limit(preview[::-1], available))
+                preview = ("…" if cut < len(preview) else "") + preview[-cut:]
+                rendered += f"{prefix}{html.escape(preview)}{suffix}"
+        return rendered + footer
 
     async def refresh(self) -> None:
         async with self._refresh_lock:
@@ -1336,11 +1384,12 @@ class ProcessingProgress:
                 return
             try:
                 await safe_edit_text(self.message, rendered, reply_markup=self.reply_markup)
-            except Exception as error:
+            except TelegramError as error:
                 retry_after = get_retry_after_seconds(error)
-                if retry_after is None:
-                    raise
-                await self.handle_flood_control(retry_after)
+                if retry_after is not None:
+                    await self.handle_flood_control(retry_after)
+                else:
+                    logger.warning("PROGRESS EDIT FAILED | type=%s", type(error).__name__)
                 return
             self._last_rendered_text = rendered
 
@@ -1373,9 +1422,16 @@ class ProcessingProgress:
         if not transcript:
             return ""
         prefix = "📝 Распознаю:\n\n"
-        available = TELEGRAM_DRAFT_TEXT_LIMIT - len(prefix)
-        if len(transcript) > available:
-            transcript = f"…{transcript[-(available - 1):]}"
+        available = TELEGRAM_DRAFT_TEXT_LIMIT - text_units(prefix)
+        if text_units(transcript) > available:
+            suffix = []
+            used = 1
+            for char in reversed(transcript):
+                if used + text_units(char) > available:
+                    break
+                suffix.append(char)
+                used += text_units(char)
+            transcript = "…" + "".join(reversed(suffix))
         return f"{prefix}{transcript}"
 
     async def refresh_live_draft(self, *, force: bool = False) -> None:
@@ -1401,7 +1457,7 @@ class ProcessingProgress:
                     draft_id=self._live_draft_id,
                     text=text,
                 )
-            except Exception as error:
+            except TelegramError as error:
                 retry_after = get_retry_after_seconds(error)
                 if retry_after is not None:
                     self._live_draft_retry_after_until = time.monotonic() + retry_after
@@ -1415,7 +1471,7 @@ class ProcessingProgress:
                 logger.warning(
                     "LIVE DRAFT DISABLED | chat=%s | error=%s",
                     getattr(self.message, "chat_id", "unknown"),
-                    error,
+                    type(error).__name__,
                 )
                 return
 
@@ -1439,7 +1495,7 @@ class ProcessingProgress:
                 await self.refresh_live_draft()
                 await self.refresh()
             except Exception as error:
-                logger.warning("PROGRESS REFRESH ERROR | error=%s", error)
+                logger.warning("PROGRESS REFRESH ERROR | type=%s", type(error).__name__)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self.refresh_interval)
             except asyncio.TimeoutError:
@@ -1494,7 +1550,7 @@ async def stop_progress(progress: ProcessingProgress, progress_task: asyncio.Tas
     try:
         await progress_task
     except Exception as error:
-        logger.warning("PROGRESS TASK ERROR | error=%s", error)
+        logger.warning("PROGRESS TASK ERROR | type=%s", type(error).__name__)
 
 
 @dataclass
@@ -1529,6 +1585,9 @@ class MediaJob:
     progress: ProcessingProgress | None = None
     current_model_index: int = -1
     current_model_name: str | None = None
+    retry_source_id: int | None = None
+    admitted: bool = False
+    manager: Any = None
 
 
 def queued_job_text(position: int) -> str:
@@ -1553,6 +1612,31 @@ class JobManager:
         self.queue: list[MediaJob] = []
         self._next_job_id = 1
         self._lock = asyncio.Lock()
+        self._stopping = False
+        self._owned_tasks: set[asyncio.Task] = set()
+        self._retry_sources: dict[int, tuple[int, int, str]] = {}
+
+    def claim_retry(self, source_id: int, source_identity: tuple[int, int, str]) -> bool:
+        # Single event-loop operation; bounded by admission limits plus in-flight clicks.
+        if (self._stopping or source_id in self._retry_sources or source_identity in self._retry_sources.values()
+                or len(self._retry_sources) >= MAX_ACTIVE_JOBS_GLOBAL + MAX_QUEUED_JOBS + 1):
+            return False
+        self._retry_sources[source_id] = source_identity
+        return True
+
+    def release_retry(self, source_id: int | None, source_identity: tuple[int, int, str] | None = None) -> None:
+        if source_id is not None and (source_identity is None or self._retry_sources.get(source_id) is source_identity):
+            self._retry_sources.pop(source_id, None)
+
+    def retry_has_job(self, source_id: int) -> bool:
+        return any(getattr(job, "retry_source_id", None) == source_id
+                   for job in [*self.active_jobs.values(), *self.queue])
+
+    def message_has_job(self, message) -> bool:
+        return any(usable_callback_message(job.processing_message)
+                   and job.processing_message.chat.id == message.chat.id
+                   and job.processing_message.message_id == message.message_id
+                   for job in [*self.active_jobs.values(), *self.queue])
 
     def allocate_job_id(self) -> int:
         job_id = self._next_job_id
@@ -1574,11 +1658,49 @@ class JobManager:
 
     def _start_job(self, job: MediaJob) -> None:
         job.status = "active"
+        job.manager = self
         job.task = asyncio.create_task(process_media_job(job))
+        self._owned_tasks.add(job.task)
+        job.task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._owned_tasks.discard(task)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error("JOB TASK FAILED | type=%s", type(error).__name__)
+
+    async def shutdown(self) -> None:
+        async with self._lock:
+            self._stopping = True
+            jobs = [*self.active_jobs.values(), *self.queue]
+            self.queue.clear()
+            tasks = list(self._owned_tasks)
+            for job in jobs:
+                job.cancel_event.set()
+            for task in tasks:
+                task.cancel()
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for job in jobs:
+                try:
+                    STORAGE.update_message_processing(
+                        job.message_processing_id, status="cancelled", completed_at=utc_now(),
+                        error_code="shutdown", error_text="Cancelled during graceful shutdown",
+                    )
+                except Exception as error:
+                    logger.warning("SHUTDOWN BOOKKEEPING FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
+        finally:
+            async with self._lock:
+                self.active_jobs.clear()
+                self._retry_sources.clear()
 
     async def submit(self, job: MediaJob) -> str:
         should_start = False
         async with self._lock:
+            if self._stopping:
+                job.status = "rejected"
+                return "rejected"
             if self._has_capacity_locked(job):
                 self.active_jobs[job.job_id] = job
                 should_start = True
@@ -1588,6 +1710,10 @@ class JobManager:
             else:
                 job.status = "rejected"
                 return "rejected"
+
+            # Persist admission on the job even if queue UI awaits are cancelled,
+            # or work finishes before the submitting callback resumes.
+            job.admitted = True
 
         if should_start:
             self._start_job(job)
@@ -1601,10 +1727,11 @@ class JobManager:
         async with self._lock:
             self.active_jobs.pop(job.job_id, None)
             job.status = "done"
+            self.release_retry(getattr(job, "retry_source_id", None))
 
             remaining_queue: list[MediaJob] = []
             for queued_job in self.queue:
-                if self._has_capacity_locked(queued_job):
+                if not self._stopping and self._has_capacity_locked(queued_job):
                     self.active_jobs[queued_job.job_id] = queued_job
                     jobs_to_start.append(queued_job)
                 else:
@@ -1627,7 +1754,7 @@ class JobManager:
                     reply_markup=job_keyboard(job.job_id),
                 )
             except Exception as error:
-                logger.warning("QUEUE MESSAGE UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+                logger.warning("QUEUE MESSAGE UPDATE FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
 
     async def get_job(self, job_id: int) -> MediaJob | None:
         async with self._lock:
@@ -1672,6 +1799,7 @@ class JobManager:
 
         if was_queued:
             job.status = "cancelled"
+            self.release_retry(getattr(job, "retry_source_id", None))
             STORAGE.update_message_processing(
                 job.message_processing_id,
                 status="cancelled",
@@ -1691,7 +1819,7 @@ class JobManager:
                 try:
                     await job.progress.set_status_text("⏹ <b>Останавливаю обработку...</b>")
                 except Exception as error:
-                    logger.warning("CANCEL STATUS UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+                    logger.warning("CANCEL STATUS UPDATE FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
             return "active_cancelling"
 
         return "not_found"
@@ -1715,7 +1843,7 @@ class JobManager:
                     f"Текущая: <code>{html.escape(job.current_model_name or '-')}</code>"
                 )
             except Exception as error:
-                logger.warning("NEXT STATUS UPDATE FAILED | job=%d | error=%s", job.job_id, error)
+                logger.warning("NEXT STATUS UPDATE FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
         return "switching"
 
 
@@ -1737,7 +1865,7 @@ async def deliver_processing_reply(
     except Exception as error:
         retry_after = get_retry_after_seconds(error)
         if retry_after is None:
-            logger.warning("FINAL MESSAGE EDIT FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
+            logger.warning("FINAL MESSAGE EDIT FAILED | message_id=%s | type=%s", getattr(message, "message_id", "unknown"), type(error).__name__)
             await safe_reply_text(message, first_chunk, reply_markup=reply_markup)
         else:
             logger.warning(
@@ -1749,14 +1877,11 @@ async def deliver_processing_reply(
             try:
                 await safe_edit_text(message, first_chunk, reply_markup=reply_markup)
             except Exception as second_error:
-                logger.warning("FINAL EDIT RETRY FAILED | error=%s", second_error)
+                logger.warning("FINAL EDIT RETRY FAILED | type=%s", type(second_error).__name__)
                 await safe_reply_text(message, first_chunk, reply_markup=reply_markup)
 
     for chunk in chunks[1:]:
-        try:
-            await safe_reply_text(message, chunk)
-        except Exception as error:
-            logger.warning("FOLLOW-UP RESULT MESSAGE FAILED | message_id=%s | error=%s", getattr(message, "message_id", "unknown"), error)
+        await safe_reply_text(message, chunk)
 
 
 async def deliver_job_reply(
@@ -1773,19 +1898,19 @@ async def deliver_job_reply(
     if not chunks:
         chunks = [unknown_internal_error_text()]
 
-    try:
-        await safe_reply_text(job.message, chunks[0], reply_markup=reply_markup)
-        for chunk in chunks[1:]:
-            await safe_reply_text(job.message, chunk)
-    except Exception as error:
-        logger.warning("NATIVE DRAFT FINAL SEND FAILED | job=%d | error=%s", job.job_id, error)
-        await deliver_processing_reply(job.processing_message, chunks, reply_markup=reply_markup)
-        return
+    target = job.message or job.processing_message
+    for index, chunk in enumerate(chunks):
+        try:
+            await safe_reply_text(target, chunk, reply_markup=reply_markup if index == 0 else None)
+        except TelegramError as error:
+            logger.warning("NATIVE DRAFT FINAL SEND FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
+            await deliver_processing_reply(job.processing_message, chunks[index:], reply_markup=reply_markup)
+            return
 
     try:
         await job.processing_message.delete()
     except Exception as error:
-        logger.warning("PROCESSING MESSAGE DELETE FAILED | job=%d | error=%s", job.job_id, error)
+        logger.warning("PROCESSING MESSAGE DELETE FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
 
 
 async def submit_media_job(job: MediaJob) -> str:
@@ -1887,6 +2012,9 @@ async def convert_media_audio(media_data: bytes, *, pcm: bool) -> tuple[bytes, s
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-nostdin",
+                "-protocol_whitelist",
+                "file,pipe",
                 "-i",
                 input_path,
                 "-vn",
@@ -1901,24 +2029,55 @@ async def convert_media_audio(media_data: bytes, *, pcm: bool) -> tuple[bytes, s
         except FileNotFoundError as error:
             raise RuntimeError("ffmpeg is required for Gemini live transcription and video notes") from error
 
+        output = bytearray()
+        diagnostic = bytearray()
+
+        async def read_output() -> None:
+            while chunk := await process.stdout.read(65536):
+                if len(output) + len(chunk) > MAX_DECODED_AUDIO_BYTES:
+                    raise MediaTooLarge("Decoded audio exceeds the one-hour conversion limit")
+                output.extend(chunk)
+
+        async def read_diagnostic() -> None:
+            while chunk := await process.stderr.read(4096):
+                diagnostic.extend(chunk)
+                del diagnostic[:-4096]
+
+        readers = [asyncio.create_task(read_output()), asyncio.create_task(read_diagnostic())]
         try:
-            output, stderr = await process.communicate()
-        except BaseException:
-            process.kill()
-            await process.wait()
-            raise
+            async with asyncio.timeout(FFMPEG_TIMEOUT_SECONDS):
+                await asyncio.gather(*readers)
+                await process.wait()
+        except TimeoutError:
+            raise RuntimeError("media_conversion_timeout: audio conversion took too long") from None
+        finally:
+            # A failed reader must not leave the sibling blocked on a full pipe.
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            for reader in readers:
+                if not reader.done():
+                    reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
+            # Reap with both pipes drained, even if the output reader hit its cap.
+            async def discard(stream) -> None:
+                while await stream.read(65536):
+                    pass
+            await asyncio.gather(discard(process.stdout), discard(process.stderr), process.wait())
 
         output_is_empty = not output or (not pcm and len(output) <= 44)
         if process.returncode != 0 or output_is_empty:
-            detail = stderr.decode("utf-8", errors="replace").strip()[-500:]
-            raise RuntimeError(f"ffmpeg audio conversion failed: {detail or 'empty output'}")
-        return output, "audio/pcm;rate=16000" if pcm else "audio/wav"
+            # Untrusted ffmpeg diagnostics can contain input content. Do not expose it.
+            raise RuntimeError("invalid_media: ffmpeg audio conversion failed or returned empty output")
+        return bytes(output), "audio/pcm;rate=16000" if pcm else "audio/wav"
     finally:
         if input_path:
             try:
                 os.unlink(input_path)
-            except FileNotFoundError:
-                pass
+            except OSError as cleanup_error:
+                logger.warning("MEDIA TEMP CLEANUP FAILED | type=%s", type(cleanup_error).__name__)
 
 
 async def transcribe_file_with_client(
@@ -1962,16 +2121,22 @@ async def transcribe_file_with_client(
         )
         return interaction_output_text(interaction)
     finally:
-        if uploaded_file is not None and getattr(uploaded_file, "name", None):
-            try:
-                await client.files.delete(name=uploaded_file.name)
-            except Exception as error:
-                logger.warning("GEMINI UPLOADED FILE DELETE FAILED | file=%s | error=%s", uploaded_file.name, error)
-        if temporary_path:
-            try:
-                os.unlink(temporary_path)
-            except FileNotFoundError:
-                pass
+        originating_error = sys.exception()
+        try:
+            if uploaded_file is not None and getattr(uploaded_file, "name", None):
+                try:
+                    await asyncio.wait_for(client.files.delete(name=uploaded_file.name), REMOTE_FILE_CLEANUP_TIMEOUT)
+                except asyncio.CancelledError:
+                    if originating_error is None:
+                        raise
+                except Exception as error:
+                    logger.warning("GEMINI UPLOADED FILE DELETE FAILED | type=%s", type(error).__name__)
+        finally:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError as cleanup_error:
+                    logger.warning("UPLOAD TEMP CLEANUP FAILED | type=%s", type(cleanup_error).__name__)
 
 
 async def transcribe_live_with_client(
@@ -2058,19 +2223,34 @@ async def transcribe_live_with_client(
                     ):
                         return
 
-            await progress.set_live_mode(True, "🎙 <b>Расшифровываю через Gemini Live...</b>")
+            live_tasks = []
             try:
-                async with asyncio.TaskGroup() as task_group:
-                    task_group.create_task(send_audio())
-                    task_group.create_task(receive_transcript())
+                await progress.set_live_mode(True, "🎙 <b>Расшифровываю через Gemini Live...</b>")
+                live_tasks = [asyncio.create_task(send_audio()), asyncio.create_task(receive_transcript())]
+                await asyncio.gather(*live_tasks)
             finally:
-                await progress.set_live_mode(False)
+                originating_error = sys.exception()
+                for task in live_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*live_tasks, return_exceptions=True)
+                try:
+                    await progress.set_live_mode(False)
+                except asyncio.CancelledError:
+                    # A cleanup coroutine must not replace the service/control error;
+                    # actual parent cancellation must still interrupt this request.
+                    current_task = asyncio.current_task()
+                    if originating_error is None or (current_task is not None and current_task.cancelling()):
+                        raise
+                except Exception as cleanup_error:
+                    logger.warning("LIVE PROGRESS CLEANUP FAILED | type=%s", type(cleanup_error).__name__)
     except (JobCancelled, NextModelRequested, asyncio.CancelledError):
         raise
     except Exception as error:
         sanitized_error = str(error)
         if api_key:
             sanitized_error = sanitized_error.replace(api_key, "[redacted]")
+        sanitized_error = sanitize_error_text(sanitized_error)
         raise RuntimeError(f"Gemini live transcription failed: {sanitized_error}") from None
 
     transcript = final_text or interim_text
@@ -2205,6 +2385,8 @@ async def call_gemini(
     message_processing_id: int,
     run_meta: dict[str, object],
     job: MediaJob | None = None,
+    *,
+    required_mode: str | None = None,
 ) -> str:
     last_error = None
 
@@ -2224,10 +2406,7 @@ async def call_gemini(
             )
             response = await wait_for_model_response(generation_task, job)
             raw_response = response.text or ""
-            if parse_structured_response(raw_response) is None:
-                raise InvalidStructuredResponse(
-                    f"invalid_structured_response from {model_name}: response did not match the required schema"
-                )
+            validate_structured_response(raw_response, required_mode or (job.mode if job is not None else "both"))
             completed_at = utc_now()
             STORAGE.add_model_attempt(
                 message_processing_id=message_processing_id,
@@ -2353,9 +2532,11 @@ async def wait_for_model_response(
         await asyncio.gather(generation_task, return_exceptions=True)
         raise asyncio.TimeoutError
     finally:
+        if not generation_task.done():
+            generation_task.cancel()
         cancel_task.cancel()
         next_task.cancel()
-        await asyncio.gather(cancel_task, next_task, return_exceptions=True)
+        await asyncio.gather(generation_task, cancel_task, next_task, return_exceptions=True)
 
 
 async def call_gemini_with_retries(
@@ -2443,6 +2624,7 @@ async def call_gemini_with_retries(
                         message_processing_id,
                         run_meta,
                         job,
+                        required_mode=postprocess_mode,
                     )
                     if job.mode == "both" and not transform_transcription:
                         _, summary = parse_response_sections(raw, "summary_only")
@@ -2491,7 +2673,7 @@ async def call_gemini_with_retries(
                     model_name,
                     attempt + 1,
                     attempts_for_model,
-                    error,
+                    type(error).__name__,
                 )
 
                 if model_index == 0 and attempt + 1 < attempts_for_model:
@@ -2522,6 +2704,24 @@ async def call_gemini_with_retries(
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 
+def usable_human_message(message) -> bool:
+    user = getattr(message, "from_user", None)
+    return (message is not None and user is not None
+            and isinstance(getattr(user, "id", None), int) and user.id > 0
+            and getattr(user, "is_bot", False) is not True
+            and getattr(message, "sender_chat", None) is None)
+
+
+def human_command(handler):
+    @wraps(handler)
+    async def guarded(update, context, *args, **kwargs):
+        if not usable_human_message(getattr(update, "message", None)):
+            return
+        return await handler(update, context, *args, **kwargs)
+    return guarded
+
+
+@human_command
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     await update.message.reply_text(
@@ -2534,6 +2734,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+@human_command
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     await update.message.reply_text(
@@ -2542,11 +2743,13 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+@human_command
 async def handle_changelog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     await update.message.reply_text(PUBLIC_CHANGELOG_TEXT, parse_mode=ParseMode.HTML)
 
 
+@human_command
 async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     uid = update.effective_user.id
@@ -2557,6 +2760,7 @@ async def handle_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+@human_command
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if ADMIN_USER_ID == 0:
@@ -2581,6 +2785,7 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await forward_feedback(update, context, feedback_text)
 
 
+@human_command
 async def forward_feedback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2591,32 +2796,27 @@ async def forward_feedback(
     user = message.from_user
 
     chat_label = "личка" if chat.type == "private" else f"{chat.type}: {chat.title or chat.id}"
-    admin_message = (
-        "📨 <b>Новый feedback по боту</b>\n\n"
-        f"<b>От:</b> {html.escape(user.full_name)}\n"
-        f"<b>User ID:</b> <code>{user.id}</code>\n"
-        f"<b>Username:</b> <code>{html.escape(user.username or '-')}</code>\n"
-        f"<b>Чат:</b> {html.escape(str(chat_label))}\n"
-        f"<b>Chat ID:</b> <code>{chat.id}</code>\n\n"
-        f"<b>Текст:</b>\n<blockquote expandable>{html.escape(feedback_text)}</blockquote>"
-    )
+    metadata = (f"📨 Новый feedback по боту\n\nОт: {user.full_name}\nUser ID: {user.id}\n"
+                f"Username: {user.username or '-'}\nЧат: {chat_label}\nChat ID: {chat.id}")
+    chunks = pack_html_blocks("", [
+        *(html.escape(piece) for piece in split_plain_text_for_html(metadata, TELEGRAM_SAFE_MESSAGE_LIMIT)),
+        *build_section_blocks("📨", "Текст", feedback_text),
+    ])
 
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=admin_message,
-            parse_mode=ParseMode.HTML,
-        )
+        for chunk in chunks:
+            await context.bot.send_message(chat_id=ADMIN_USER_ID, text=chunk, parse_mode=ParseMode.HTML)
     except Exception as error:
-        logger.error("FEEDBACK FORWARD ERROR | user=%d | chat=%d | error=%s", user.id, chat.id, error)
+        logger.error("FEEDBACK FORWARD ERROR | type=%s", type(error).__name__)
         await update.message.reply_text("⚠️ Не удалось отправить feedback администратору. Попробуй ещё раз позже.")
         return
 
     STORAGE.clear_pending_feedback(chat.id, user.id)
-    logger.info("FEEDBACK | from_user=%d | chat=%d | text=%s", user.id, chat.id, feedback_text[:300])
+    logger.info("FEEDBACK DELIVERED")
     await update.message.reply_text("✅ Спасибо. Я отправил твой feedback администратору.")
 
 
+@human_command
 async def handle_pending_feedback_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if message is None or message.text is None:
@@ -2637,7 +2837,7 @@ async def handle_pending_feedback_message(update: Update, context: ContextTypes.
 
 
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("UNHANDLED ERROR | update=%s", update, exc_info=context.error)
+    logger.error("UNHANDLED ERROR | type=%s", type(context.error).__name__)
 
     message = getattr(update, "effective_message", None)
     if message is None:
@@ -2646,15 +2846,19 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         await message.reply_text(unknown_internal_error_text(), parse_mode=ParseMode.HTML)
     except Exception as error:
-        logger.error("ERROR HANDLER FAILED | error=%s", error)
+        logger.error("ERROR HANDLER FAILED | type=%s", type(error).__name__)
 
 
+@human_command
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Эта команда только для администратора.")
         return
 
+    if not is_private_chat(update.message):
+        await update.message.reply_text("⚠️ /stats работает только в личном чате с ботом.")
+        return
     snapshot = STORAGE.get_stats_snapshot()
     backup = "✅ подключён" if GEMINI_API_KEY_2 else "❌ не настроен"
 
@@ -2699,6 +2903,7 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+@human_command
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
@@ -2715,6 +2920,9 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(error_text)
         return
 
+    if not is_private_chat(update.message):
+        await update.message.reply_text("⚠️ /history работает только в личном чате с ботом.")
+        return
     entries = STORAGE.get_recent_processing(limit=limit or ADMIN_HISTORY_DEFAULT_LIMIT)
     if not entries:
         await update.message.reply_text("ℹ️ В истории обработок пока нет записей.")
@@ -2727,6 +2935,7 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await reply_html_entries(update.message, heading, [format_history_entry(entry) for entry in entries])
 
 
+@human_command
 async def handle_last_errors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
@@ -2743,6 +2952,9 @@ async def handle_last_errors(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(error_text)
         return
 
+    if not is_private_chat(update.message):
+        await update.message.reply_text("⚠️ /last_errors работает только в личном чате с ботом.")
+        return
     entries = STORAGE.get_recent_failed_attempts(limit=limit or ADMIN_HISTORY_DEFAULT_LIMIT)
     if not entries:
         await update.message.reply_text("✅ Ошибок model_attempts пока нет.")
@@ -2755,6 +2967,7 @@ async def handle_last_errors(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await reply_html_entries(update.message, heading, [format_last_error_entry(entry) for entry in entries])
 
 
+@human_command
 async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2762,20 +2975,14 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if not context.args:
         _, current_language, _ = STORAGE.get_settings(scope_type, scope_id)
-        await update.message.reply_text(
-            f"Текущий язык {scope_label}: <code>{current_language}</code>\n\n"
-            "Использование: /language auto | ru | en | de | ...",
-            parse_mode=ParseMode.HTML,
-        )
+        await reply_untrusted_text(update.message, f"Текущий язык {scope_label}: {current_language}\n\n"
+                                   "Использование: /language auto | ru | en | de | ...")
         return
 
     language = " ".join(context.args).strip().lower()
     STORAGE.set_language(scope_type, scope_id, language)
     label = "язык оригинала" if language == "auto" else language
-    await update.message.reply_text(
-        f"✅ Язык ответа {scope_label}: <b>{html.escape(label)}</b>",
-        parse_mode=ParseMode.HTML,
-    )
+    await reply_untrusted_text(update.message, f"✅ Язык ответа {scope_label}: {label}")
 
 
 def normalize_transcription_type(value: str) -> str | None:
@@ -2803,6 +3010,7 @@ def transcription_type_label(transcription_type: str) -> str:
     return "очищенный readable текст"
 
 
+@human_command
 async def handle_transcription_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2839,6 +3047,7 @@ async def handle_transcription_type(update: Update, context: ContextTypes.DEFAUL
     )
 
 
+@human_command
 async def handle_transcription_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2849,6 +3058,7 @@ async def handle_transcription_only(update: Update, context: ContextTypes.DEFAUL
     )
 
 
+@human_command
 async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2859,6 +3069,7 @@ async def handle_summary_only(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+@human_command
 async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2869,6 +3080,7 @@ async def handle_tldr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+@human_command
 async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     scope_key, scope_label = get_settings_scope(update.message)
@@ -2879,6 +3091,7 @@ async def handle_both(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+@human_command
 async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
@@ -2915,6 +3128,7 @@ async def handle_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+@human_command
 async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
@@ -2971,6 +3185,7 @@ async def handle_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
+@human_command
 async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     message = update.message
@@ -2989,6 +3204,9 @@ async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     target = message.reply_to_message.from_user
+    if target is None or getattr(target, "is_bot", False) is True or getattr(message.reply_to_message, "sender_chat", None) is not None:
+        await message.reply_text("⚠️ Нужен ответ на сообщение обычного пользователя, не канала или анонимного отправителя.")
+        return
     now_ignored = STORAGE.toggle_group_ignore(message.chat.id, target.id, message.from_user.id)
     if now_ignored:
         await message.reply_text(
@@ -3002,6 +3220,7 @@ async def handle_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+@human_command
 async def handle_broadcast_changelog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     if not is_admin(update.effective_user.id):
@@ -3035,7 +3254,7 @@ async def handle_broadcast_changelog(update: Update, context: ContextTypes.DEFAU
                 "CHANGELOG BROADCAST ERROR | version=%s | user=%d | error=%s",
                 PUBLIC_CHANGELOG_VERSION,
                 user_id,
-                error,
+                type(error).__name__,
             )
             continue
 
@@ -3065,6 +3284,7 @@ def control_result_text(result: str) -> str:
     return labels.get(result, "ℹ️ Команда обработана.")
 
 
+@human_command
 async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     job = await JOB_MANAGER.latest_for_user_chat(
@@ -3081,6 +3301,7 @@ async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(control_result_text(result))
 
 
+@human_command
 async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_context(update)
     job = await JOB_MANAGER.latest_for_user_chat(
@@ -3101,6 +3322,34 @@ async def enqueue_retry_processing(
     processing: dict[str, Any],
     context: ContextTypes.DEFAULT_TYPE,
     processing_message: Any,
+) -> str:
+    admission: list[MediaJob] = []
+    try:
+        return await _enqueue_retry_processing(processing, context, processing_message, admission)
+    finally:
+        # Keep the callback's claim throughout recovery. Once admitted, neither
+        # cancellation nor a later UI failure may replace this job's controls.
+        if not admission or not admission[0].admitted:
+            source_id = processing.get("_retry_source_id")
+            if (source_id is not None and processing.get("status") == "failed"
+                    and JOB_MANAGER._retry_sources.get(source_id) is processing.get("_retry_claim")
+                    and not JOB_MANAGER.retry_has_job(source_id)
+                    and not JOB_MANAGER.message_has_job(processing_message)):
+                try:
+                    await safe_edit_text(
+                        processing_message,
+                        "⚠️ Не получилось запустить повтор. Попробуй ещё раз немного позже.",
+                        reply_markup=retry_keyboard(source_id),
+                    )
+                except Exception as error:
+                    logger.warning("RETRY RESTORE FAILED | processing_id=%d | type=%s", source_id, type(error).__name__)
+
+
+async def _enqueue_retry_processing(
+    processing: dict[str, Any],
+    context: ContextTypes.DEFAULT_TYPE,
+    processing_message: Any,
+    admission: list[MediaJob],
 ) -> str:
     media_type = str(processing["media_type"])
     duration_seconds = int(processing["duration_seconds"])
@@ -3153,7 +3402,9 @@ async def enqueue_retry_processing(
         user_name=processing_user_name(processing),
         user_username=processing_user_username(processing),
         message_processing_id=message_processing_id,
+        retry_source_id=processing.get("_retry_source_id"),
     )
+    admission.append(job)
     return await submit_media_job(job)
 
 
@@ -3189,17 +3440,61 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Не могу обновить это сообщение.", show_alert=True)
         return
 
+    if (not usable_callback_message(query.message)
+            or query.message.chat.id != int(processing["chat_id"])):
+        await query.answer("Повтор доступен только в исходном чате.", show_alert=True)
+        return
+    # Callback data is user-controlled, unlike the server-supplied message
+    # markup. Require this source's terminal keyboard and an unoccupied target.
+    if (getattr(query.message, "reply_markup", None) != retry_keyboard(source_processing_id)
+            or JOB_MANAGER.message_has_job(query.message)):
+        await query.answer("Эта кнопка не относится к исходной обработке.", show_alert=True)
+        return
+    if (processing.get("media_type") not in ("voice", "video")
+            or not isinstance(processing.get("telegram_file_id"), str)
+            or not processing["telegram_file_id"].strip()
+            or not isinstance(processing.get("telegram_message_id"), int)
+            or processing["telegram_message_id"] <= 0
+            or not isinstance(processing.get("duration_seconds"), int)
+            or processing["duration_seconds"] < 0):
+        await query.answer("В базе нет корректного исходного медиа.", show_alert=True)
+        return
+    if (STORAGE.is_user_ignored(int(processing["user_id"]), int(processing["chat_id"]))
+            or STORAGE.is_user_ignored(user_id, int(processing["chat_id"]))):
+        await query.answer("Повтор недоступен по политике доступа.", show_alert=True)
+        return
+    identity = (int(processing["chat_id"]), int(processing["telegram_message_id"]), str(processing["media_type"]))
+    if not JOB_MANAGER.claim_retry(source_processing_id, identity):
+        await query.answer("Повтор уже запущен или бот останавливается.", show_alert=False)
+        return
+
+    accepted = False
     try:
-        submit_result = await enqueue_retry_processing(processing, context, query.message)
+        if not is_admin(user_id) and not STORAGE.check_and_record_rate_limit(user_id, RATE_LIMIT, time.time()):
+            await query.answer("Слишком много запросов. Подожди минуту.", show_alert=True)
+            return
+        retry_source = dict(processing, _retry_source_id=source_processing_id, _retry_claim=identity)
+        submit_result = await enqueue_retry_processing(retry_source, context, query.message)
+        accepted = submit_result != "rejected"
     except Exception as error:
-        logger.error("RETRY CALLBACK FAILED | processing_id=%d | error=%s", source_processing_id, error)
+        logger.error("RETRY CALLBACK FAILED | processing_id=%d | type=%s", source_processing_id, type(error).__name__)
         await query.answer("Не получилось запустить повтор. Попробуй ещё раз.", show_alert=True)
         return
+    finally:
+        if not accepted and not JOB_MANAGER.retry_has_job(source_processing_id):
+            JOB_MANAGER.release_retry(source_processing_id, identity)
 
     if submit_result == "rejected":
         await query.answer("Очередь заполнена. Попробуй немного позже.", show_alert=True)
     else:
         await query.answer("Повторная обработка запущена.", show_alert=False)
+
+
+def usable_callback_message(message) -> bool:
+    return (message is not None
+            and getattr(message, "is_accessible", True) is not False
+            and isinstance(getattr(message, "message_id", None), int)
+            and isinstance(getattr(getattr(message, "chat", None), "id", None), int))
 
 
 async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3221,6 +3516,14 @@ async def handle_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id if query.from_user is not None else 0
     if user_id != job.user_id and not is_admin(user_id):
         await query.answer("Управлять обработкой может только отправитель.", show_alert=True)
+        return
+
+    if (not usable_callback_message(query.message)
+            or not usable_callback_message(job.processing_message)
+            or query.message.chat.id != job.chat_id
+            or query.message.chat.id != job.processing_message.chat.id
+            or query.message.message_id != job.processing_message.message_id):
+        await query.answer("Эта кнопка не относится к текущей обработке.", show_alert=True)
         return
 
     if action == "stop":
@@ -3252,7 +3555,7 @@ async def handle_media(
             )
         return
 
-    if message.from_user is None:
+    if not usable_human_message(message):
         logger.info(
             "IGNORED MEDIA WITHOUT USER | media=%s | chat=%s | message_id=%s",
             media_type,
@@ -3285,11 +3588,9 @@ async def handle_media(
         media_type=media_type,
     ):
         logger.info(
-            "DUPLICATE MEDIA UPDATE IGNORED | media=%s | chat=%s (%d) | user=%s (%d) | message_id=%d",
+            "DUPLICATE MEDIA UPDATE IGNORED | media=%s | chat=%d | user=%d | message_id=%d",
             media_type,
-            chat_title,
             chat_id,
-            user_name,
             user_id,
             message.message_id,
         )
@@ -3316,11 +3617,9 @@ async def handle_media(
             error_text="Ignored by policy",
         )
         logger.info(
-            "IGNORED | media=%s | chat=%s (%d) | user=%s (%d)",
+            "IGNORED | media=%s | chat=%d | user=%d",
             media_type,
-            chat_title,
             chat_id,
-            user_name,
             user_id,
         )
         return
@@ -3421,28 +3720,52 @@ async def handle_media(
 
 
 async def process_media_job(job: MediaJob) -> None:
-    progress = ProcessingProgress(
-        job.processing_message,
-        job.progress_text,
-        reply_markup=job_keyboard(job.job_id),
-        bot=job.context.bot,
-    )
-    job.progress = progress
-    progress_task: asyncio.Task | None = asyncio.create_task(progress.run())
+    progress: ProcessingProgress | None = None
+    progress_task: asyncio.Task | None = None
     t_start = time.monotonic()
-    started_at = utc_now()
-    STORAGE.update_message_processing(
-        job.message_processing_id,
-        status="started",
-        started_at=started_at,
-    )
     run_meta: dict[str, object] = {
         "attempt_no": 1,
         "models_tried": [],
         "fallback_key_used": False,
     }
 
+    async def close_progress() -> bool:
+        nonlocal progress_task
+        if progress is None or progress_task is None:
+            return True
+        task = progress_task
+        try:
+            await stop_progress(progress, task)
+            return True
+        except Exception as error:
+            logger.warning("JOB PROGRESS CLEANUP FAILED | job=%d | type=%s", job.job_id, type(error).__name__)
+            return False
+        finally:
+            progress.stop()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            progress_task = None
+
+    def record_terminal(status: str, error: BaseException, reply: str) -> None:
+        try:
+            STORAGE.update_message_processing(
+                job.message_processing_id, status=status, completed_at=utc_now(),
+                processing_ms=int((time.monotonic() - t_start) * 1000),
+                final_reply_text=reply, models_tried=models_tried_text(run_meta),
+                fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
+                error_code="cancelled" if status == "cancelled" else extract_error_code(error),
+                error_text=shorten_error(error),
+            )
+        except Exception as storage_error:
+            logger.warning("JOB BOOKKEEPING FAILED | job=%d | type=%s", job.job_id, type(storage_error).__name__)
+
     try:
+        progress = ProcessingProgress(job.processing_message, job.progress_text,
+                                      reply_markup=job_keyboard(job.job_id), bot=job.context.bot)
+        job.progress = progress
+        progress_task = asyncio.create_task(progress.run())
+        STORAGE.update_message_processing(job.message_processing_id, status="started", started_at=utc_now())
         ensure_job_can_continue(job)
         known_file_size_bytes = job.file_size_kb * 1024 if job.file_size_kb is not None else None
         if is_media_too_large(known_file_size_bytes):
@@ -3497,8 +3820,8 @@ async def process_media_job(job: MediaJob) -> None:
             processing_time_text,
         )
         final_reply = "\n\n".join(final_reply_chunks)
-        await stop_progress(progress, progress_task)
-        progress_task = None
+        if not await close_progress():
+            raise RuntimeError("progress_cleanup_failed")
         await deliver_job_reply(job, progress, final_reply_chunks)
 
         STORAGE.increment_stats(job.user_id, job.media_type)
@@ -3517,93 +3840,42 @@ async def process_media_job(job: MediaJob) -> None:
             fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
         )
 
-        logger.info(
-            "✅ %s | chat=%s (%d) | user=%s (%d) | duration=%s | size=%dKB | mode=%s | lang=%s | transcription=%s | model=%s | time=%.1fs | text: %s",
-            job.media_type.upper(),
-            job.chat_title,
-            job.chat_id,
-            job.user_name,
-            job.user_id,
-            job.duration_str,
-            actual_file_size_kb,
-            job.mode,
-            job.language,
-            job.transcription_type,
-            model_used,
-            elapsed_seconds,
-            raw.replace("\n", " ")[:300],
-        )
+        logger.info("JOB SUCCESS | job=%d | processing=%d | time=%.1fs", job.job_id, job.message_processing_id, elapsed_seconds)
+    except asyncio.CancelledError as error:
+        record_terminal("cancelled", error, cancelled_job_text())
+        raise
     except JobCancelled as error:
-        elapsed_seconds = time.monotonic() - t_start
-        elapsed_ms = int(elapsed_seconds * 1000)
-        if progress_task is not None:
-            await stop_progress(progress, progress_task)
-            progress_task = None
-
-        STORAGE.update_message_processing(
-            job.message_processing_id,
-            status="cancelled",
-            completed_at=utc_now(),
-            processing_ms=elapsed_ms,
-            final_reply_text=cancelled_job_text(),
-            models_tried=models_tried_text(run_meta),
-            fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
-            error_code="cancelled",
-            error_text=shorten_error(error),
-        )
-        logger.info(
-            "⏹ %s CANCELLED | chat=%s (%d) | user=%s (%d) | time=%.1fs",
-            job.media_type.upper(),
-            job.chat_title,
-            job.chat_id,
-            job.user_name,
-            job.user_id,
-            elapsed_seconds,
-        )
-        await deliver_job_reply(job, progress, cancelled_job_text())
+        await close_progress()
+        record_terminal("cancelled", error, cancelled_job_text())
+        logger.info("JOB CANCELLED | job=%d | processing=%d", job.job_id, job.message_processing_id)
+        if progress is not None:
+            try:
+                await deliver_job_reply(job, progress, cancelled_job_text())
+            except Exception as delivery_error:
+                logger.warning("CANCEL DELIVERY FAILED | job=%d | type=%s", job.job_id, type(delivery_error).__name__)
     except Exception as error:
-        elapsed_seconds = time.monotonic() - t_start
-        elapsed_ms = int(elapsed_seconds * 1000)
         user_error_text = friendly_error(error)
-        if progress_task is not None:
-            await stop_progress(progress, progress_task)
-            progress_task = None
-
-        STORAGE.update_message_processing(
-            job.message_processing_id,
-            status="failed",
-            completed_at=utc_now(),
-            processing_ms=elapsed_ms,
-            final_reply_text=user_error_text,
-            models_tried=models_tried_text(run_meta),
-            fallback_key_used=1 if run_meta["fallback_key_used"] else 0,
-            error_code=extract_error_code(error),
-            error_text=shorten_error(error),
-        )
-
-        logger.error(
-            "❌ %s ERROR | chat=%s (%d) | user=%s (%d) | time=%.1fs | error=%s",
-            job.media_type.upper(),
-            job.chat_title,
-            job.chat_id,
-            job.user_name,
-            job.user_id,
-            elapsed_seconds,
-            error,
-        )
-        await deliver_job_reply(
-            job,
-            progress,
-            user_error_text,
-            reply_markup=None if isinstance(error, MediaTooLarge) else retry_keyboard(job.message_processing_id),
-        )
+        await close_progress()
+        record_terminal("failed", error, user_error_text)
+        logger.error("JOB FAILED | job=%d | processing=%d | type=%s | code=%s",
+                     job.job_id, job.message_processing_id, type(error).__name__, extract_error_code(error))
+        if progress is not None:
+            try:
+                await deliver_job_reply(job, progress, user_error_text,
+                                        reply_markup=None if isinstance(error, MediaTooLarge) else retry_keyboard(job.message_processing_id))
+            except Exception as delivery_error:
+                logger.warning("ERROR DELIVERY FAILED | job=%d | type=%s", job.job_id, type(delivery_error).__name__)
     finally:
         job.current_model_index = -1
         job.current_model_name = None
         job.progress = None
-        if progress_task is not None:
-            await stop_progress(progress, progress_task)
-        await JOB_MANAGER.finish(job)
+        try:
+            await close_progress()
+        finally:
+            try:
+                await (job.manager or JOB_MANAGER).finish(job)
+            except Exception as finish_error:
+                logger.warning("JOB FINISH FAILED | job=%d | type=%s", job.job_id, type(finish_error).__name__)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3623,6 +3895,7 @@ def main() -> None:
         Application.builder()
         .token(TELEGRAM_TOKEN)
         .post_init(post_init)
+        .post_stop(post_stop)
         .post_shutdown(post_shutdown)
         .build()
     )

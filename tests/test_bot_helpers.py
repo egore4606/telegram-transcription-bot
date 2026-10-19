@@ -78,6 +78,7 @@ def make_guard_update(*, text: str, chat_type: str = "private", user_id: int = 4
     message.text = text
     message.caption = None
     message.from_user = user
+    message.sender_chat = None
     message.chat = chat
     message.reply_text = AsyncMock()
 
