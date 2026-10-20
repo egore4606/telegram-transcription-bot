@@ -23,6 +23,7 @@ from telegram.error import RetryAfter, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from storage import DEFAULT_TRANSCRIPTION_TYPE, Storage, utc_now
+from integration_api import APIConfig, IntegrationAPI, IntegrationJob, SilentProgress
 
 
 logging.basicConfig(
@@ -1110,11 +1111,35 @@ async def sync_bot_commands(app: Application) -> None:
 
 
 async def post_init(app: Application) -> None:
+    config = APIConfig.from_env()
+    if config is not None:
+        api = IntegrationAPI(config, JOB_MANAGER, process_integration_media,
+                             admin_user_id=ADMIN_USER_ID, max_media_bytes=MAX_MEDIA_BYTES)
+        await api.start()
+        app.bot_data["integration_api"] = api
     await sync_bot_commands(app)
 
 
+async def stop_bot_jobs(app: Application, *, remove_api: bool = False) -> None:
+    data = getattr(app, "bot_data", {})
+    api = data.pop("integration_api", None) if remove_api else data.get("integration_api")
+    try:
+        if api is not None:
+            await api.stop()
+    except Exception as error:
+        logger.warning("INTEGRATION STOP FAILED | type=%s", type(error).__name__)
+    try:
+        await JOB_MANAGER.shutdown()
+    finally:
+        if api is not None:
+            try:
+                api.store.interrupt_unfinished("service_stopped")
+            except Exception as error:
+                logger.warning("INTEGRATION SHUTDOWN BOOKKEEPING FAILED | type=%s", type(error).__name__)
+
+
 async def post_shutdown(app: Application) -> None:
-    await JOB_MANAGER.shutdown()
+    await stop_bot_jobs(app, remove_api=True)
     results = await asyncio.gather(
         *(client.aclose() for client in gemini_async_clients),
         return_exceptions=True,
@@ -1126,7 +1151,7 @@ async def post_shutdown(app: Application) -> None:
 
 async def post_stop(app: Application) -> None:
     # PTB calls this before shutting down its Bot HTTP client.
-    await JOB_MANAGER.shutdown()
+    await stop_bot_jobs(app)
 
 
 def feedback_hint_text() -> str:
@@ -1608,7 +1633,7 @@ def cancelled_job_text() -> str:
 
 class JobManager:
     def __init__(self) -> None:
-        self.active_jobs: dict[int, MediaJob] = {}
+        self.active_jobs: dict[int, MediaJob | IntegrationJob] = {}
         self.queue: list[MediaJob] = []
         self._next_job_id = 1
         self._lock = asyncio.Lock()
@@ -1643,7 +1668,7 @@ class JobManager:
         self._next_job_id += 1
         return job_id
 
-    def _has_capacity_locked(self, job: MediaJob) -> bool:
+    def _has_capacity_locked(self, job: MediaJob | IntegrationJob) -> bool:
         user_active = sum(1 for active_job in self.active_jobs.values() if active_job.user_id == job.user_id)
         chat_active = sum(1 for active_job in self.active_jobs.values() if active_job.chat_id == job.chat_id)
         return (
@@ -1670,6 +1695,18 @@ class JobManager:
             if error is not None:
                 logger.error("JOB TASK FAILED | type=%s", type(error).__name__)
 
+    async def submit_external(self, job: IntegrationJob, run) -> bool:
+        """Share Telegram's slots; never put API work ahead of its queue."""
+        async with self._lock:
+            if self._stopping or self.queue or not self._has_capacity_locked(job):
+                return False
+            self.active_jobs[job.job_id] = job
+            job.manager = self
+            job.task = asyncio.create_task(run())
+            self._owned_tasks.add(job.task)
+            job.task.add_done_callback(self._task_done)
+            return True
+
     async def shutdown(self) -> None:
         async with self._lock:
             self._stopping = True
@@ -1683,6 +1720,8 @@ class JobManager:
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
             for job in jobs:
+                if job.message_processing_id is None:
+                    continue  # API terminal state is owned by IntegrationStore.
                 try:
                     STORAGE.update_message_processing(
                         job.message_processing_id, status="cancelled", completed_at=utc_now(),
@@ -1759,7 +1798,8 @@ class JobManager:
     async def get_job(self, job_id: int) -> MediaJob | None:
         async with self._lock:
             if job_id in self.active_jobs:
-                return self.active_jobs[job_id]
+                job = self.active_jobs[job_id]
+                return job if isinstance(job, MediaJob) else None
             for job in self.queue:
                 if job.job_id == job_id:
                     return job
@@ -1777,7 +1817,8 @@ class JobManager:
         async with self._lock:
             if active:
                 candidates.extend(
-                    job for job in self.active_jobs.values() if job.user_id == user_id and job.chat_id == chat_id
+                    job for job in self.active_jobs.values()
+                    if isinstance(job, MediaJob) and job.user_id == user_id and job.chat_id == chat_id
                 )
             if queued:
                 candidates.extend(job for job in self.queue if job.user_id == user_id and job.chat_id == chat_id)
@@ -2283,6 +2324,16 @@ async def transcribe_with_client(
     )
 
 
+def record_model_attempt(run_meta: dict[str, object], **fields) -> None:
+    if fields["message_processing_id"] is not None:
+        STORAGE.add_model_attempt(**fields)
+    else:
+        # Integration attempts stay in memory, without provider exception text.
+        attempts = run_meta.setdefault("integration_attempts", [])
+        if isinstance(attempts, list):
+            attempts.append({key: fields[key] for key in ("attempt_no", "model_name", "status")})
+
+
 async def call_gemini_transcribe(
     model_name: str,
     media_data: bytes,
@@ -2322,7 +2373,7 @@ async def call_gemini_transcribe(
             transcript, actual_model = await wait_for_model_response(request_task, job, timeout=request_timeout)
             if not transcript.strip():
                 raise InvalidStructuredResponse(f"empty transcription from {actual_model}")
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=actual_model,
@@ -2336,7 +2387,7 @@ async def call_gemini_transcribe(
                 run_meta["fallback_key_used"] = True
             return transcript, actual_model
         except (JobCancelled, NextModelRequested) as error:
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=actual_model,
@@ -2357,7 +2408,7 @@ async def call_gemini_transcribe(
         except Exception as error:
             last_error = error
 
-        STORAGE.add_model_attempt(
+        record_model_attempt(run_meta,
             message_processing_id=message_processing_id,
             attempt_no=attempt_no,
             model_name=actual_model,
@@ -2408,7 +2459,7 @@ async def call_gemini(
             raw_response = response.text or ""
             validate_structured_response(raw_response, required_mode or (job.mode if job is not None else "both"))
             completed_at = utc_now()
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=model_name,
@@ -2423,7 +2474,7 @@ async def call_gemini(
             return raw_response
         except JobCancelled as error:
             completed_at = utc_now()
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=model_name,
@@ -2439,7 +2490,7 @@ async def call_gemini(
             raise
         except NextModelRequested as error:
             completed_at = utc_now()
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=model_name,
@@ -2458,7 +2509,7 @@ async def call_gemini(
                 f"model_request_timeout: generate_content exceeded {MODEL_REQUEST_TIMEOUT}s for {model_name}"
             )
             completed_at = utc_now()
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=model_name,
@@ -2475,7 +2526,7 @@ async def call_gemini(
             break
         except Exception as error:
             completed_at = utc_now()
-            STORAGE.add_model_attempt(
+            record_model_attempt(run_meta,
                 message_processing_id=message_processing_id,
                 attempt_no=attempt_no,
                 model_name=model_name,
@@ -3719,6 +3770,38 @@ async def handle_media(
     await submit_media_job(job)
 
 
+async def transcribe_media_bytes(job, data: bytes, progress, run_meta: dict[str, object]) -> tuple[str, str]:
+    """Single engine entry for Telegram and the private integration transport."""
+    ensure_job_can_continue(job)
+    if is_media_too_large(len(data)):
+        raise MediaTooLarge("Downloaded media size exceeds configured limit")
+    prompt = build_prompt(
+        job.media_type, job.language, job.mode, job.duration_seconds, job.transcription_type,
+        sender_name=job.user_name, sender_username=job.user_username, chat_title=job.chat_title,
+    )
+    result = await call_gemini_with_retries(
+        [types.Content(parts=[types.Part.from_bytes(data=data, mime_type=job.mime_type),
+                              types.Part.from_text(text=prompt)])],
+        progress, job.message_processing_id, run_meta, job, media_data=data, mime_type=job.mime_type,
+    )
+    ensure_job_can_continue(job)
+    return result
+
+
+async def process_integration_media(job: IntegrationJob, data: bytes) -> dict[str, object]:
+    started = time.monotonic()
+    run_meta = {"attempt_no": 1, "models_tried": [], "fallback_key_used": False}
+    raw, model = await transcribe_media_bytes(job, data, SilentProgress(), run_meta)
+    transcription, summary = parse_response_sections(raw, job.mode)
+    elapsed = time.monotonic() - started
+    chunks = build_final_reply_chunks(
+        "🎙" if job.media_type == "voice" else "🔵", format_duration(job.duration_seconds),
+        job.user_name, transcription, summary, job.mode, format_processing_time(elapsed),
+    )
+    return {"transcription": transcription, "summary": summary, "model_used": model,
+            "elapsed_ms": int(elapsed * 1000), "reply_chunks": chunks}
+
+
 async def process_media_job(job: MediaJob) -> None:
     progress: ProcessingProgress | None = None
     progress_task: asyncio.Task | None = None
@@ -3777,33 +3860,7 @@ async def process_media_job(job: MediaJob) -> None:
         if is_media_too_large(len(data)):
             raise MediaTooLarge("Downloaded media size exceeds configured limit")
         actual_file_size_kb = len(data) // 1024
-        prompt = build_prompt(
-            job.media_type,
-            job.language,
-            job.mode,
-            job.duration_seconds,
-            job.transcription_type,
-            sender_name=job.user_name,
-            sender_username=job.user_username,
-            chat_title=job.chat_title,
-        )
-
-        raw, model_used = await call_gemini_with_retries(
-            [
-                types.Content(
-                    parts=[
-                        types.Part.from_bytes(data=bytes(data), mime_type=job.mime_type),
-                        types.Part.from_text(text=prompt),
-                    ]
-                )
-            ],
-            progress,
-            job.message_processing_id,
-            run_meta,
-            job,
-            media_data=bytes(data),
-            mime_type=job.mime_type,
-        )
+        raw, model_used = await transcribe_media_bytes(job, bytes(data), progress, run_meta)
         ensure_job_can_continue(job)
 
         elapsed_seconds = time.monotonic() - t_start

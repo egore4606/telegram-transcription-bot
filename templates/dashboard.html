@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 
 {% block content %}
+  <section class="panel" style="margin-bottom: 18px;">
+    <div class="panel-head"><h2>Personal Auto Transcriber · private API v1</h2></div>
+    <div class="panel-body table-wrap">
+      <p>Source: <code>personal-auto-transcriber</code>. Metadata only; no media or transcripts on this panel.</p>
+      {% if integration_rows %}
+      <table>
+        <thead><tr><th>Request</th><th>Status</th><th>Engine version</th><th>Error code</th></tr></thead>
+        <tbody>{% for row in integration_rows %}
+          <tr><td class="mono">{{ row.request_id[:12] }}</td><td>{{ row.status }}</td><td class="mono">{{ row.engine_version }}</td><td>{{ row.error or "-" }}</td></tr>
+        {% endfor %}</tbody>
+      </table>
+      {% else %}<div class="empty">No integration requests recorded. The API is disabled by default.</div>{% endif %}
+    </div>
+  </section>
   <div class="grid cards">
     <div class="card">
       <div class="label">Total Processing</div>

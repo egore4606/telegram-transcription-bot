@@ -69,6 +69,9 @@ flowchart LR
 - Read-only Flask admin panel available through an SSH tunnel.
 - Multi-architecture container images published to GitHub Container Registry.
 - Automated tests, container builds, CodeQL scanning, dependency review, and Dependabot.
+- Optional authenticated private API for Personal Auto Transcriber: a second Telegram
+  client uses this running bot's engine, not a copied Gemini implementation. Disabled
+  by default; see [integration architecture and setup](docs/INTEGRATION_API.md).
 
 ## Quick start
 
