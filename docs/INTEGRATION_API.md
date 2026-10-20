@@ -153,6 +153,18 @@ The feature deliberately restores `websockets>=13,<17` while retaining PR #20's
 ancestry; the combined feature requirements resolve normally. No `--no-deps`,
 ignored dependency check or fabricated compatible version is used.
 
+Offline merge verification against main `b32e35974fd9e1b5be575e1d2ebd9126df356513`
+and prerequisite heads `503db9a`, `c909cac`, `3b7fdad`:
+- Normal prerequisite merges + this feature: clean merge, exact feature tree,
+  full server suite passes.
+- Squashed prerequisites + merge of the historical feature branch: conflicts in
+  `bot.py`, `requirements.txt`, `tests/conftest.py`. Do not claim conflict freedom.
+- Squashed prerequisites + cherry-pick of only the feature change: clean, exact
+  feature tree, full suite passes. After actual prerequisite squash merges,
+  rebase/recreate this feature from updated main using only commits after
+  `6ca4725` (exclude the prerequisite merge itself), then rerun verification.
+  This is a future branch-maintenance step, not a main merge/deployment approval.
+
 Offline tests cover auth-before-body, request validation, bounded uploads/results,
 persistent dedupe/conflicts, restart/timeout/shutdown behavior, shared capacity,
 main-engine invocation, canonical escaping, and read-only admin visibility. Real
