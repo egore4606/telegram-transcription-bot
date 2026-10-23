@@ -30,6 +30,7 @@ def source_row():
 def retry_storage(monkeypatch):
     store = Mock()
     store.get_processing_detail.return_value = source_row()
+    store.get_preferences.return_value = {"technical_details": False, "context_enabled": False}
     store.is_user_ignored.return_value = False
     store.is_globally_blocked.return_value = False
     store.is_group_ignored.return_value = False

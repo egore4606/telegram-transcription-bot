@@ -21,8 +21,9 @@ flowchart LR
 
 ## Boundaries and visibility
 
-- Disabled by default. Existing bot commands/chat settings and SQLite schema v5
-  are unchanged. API requests use explicit mode, original language (`auto`) and
+- Disabled by default. Ordinary processing history/settings remain compatible; the
+  guided-settings release adds schema v6 interface preferences without changing API v1.
+  API requests use explicit mode, original language (`auto`) and
   `clean`/`verbatim`, never the owner's settings in a different Telegram chat.
 - The user-account client owns consent, watching outgoing media, deduplication
   and Telegram delivery. The server never receives its Telegram session, private

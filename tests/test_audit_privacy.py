@@ -26,6 +26,7 @@ def update_fixture(target=None):
 def test_language_set_and_legacy_read_are_escaped_bounded(monkeypatch, read, value):
     store = Mock()
     store.get_settings.return_value = ("both", value, "clean")
+    store.is_user_ignored.return_value = False
     monkeypatch.setattr(bot, "STORAGE", store)
     update = update_fixture()
     asyncio.run(bot.handle_language(update, NS(args=[] if read else [value])))

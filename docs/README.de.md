@@ -62,11 +62,14 @@ docker compose -f docker-compose.ghcr.yml up -d
 
 Alle Variablen und Standardwerte stehen in der [Konfigurationsreferenz](CONFIGURATION.md).
 
-Setze `GEMINI_MODEL=gemini-3.5-transcribe` für die Datei-Transkription oder
-`GEMINI_MODEL=gemini-3.5-transcribe-live` für laufend aktualisierten Text. Zusammenfassungen,
-TL;DR, Übersetzungen und zusätzliche Bereinigung übernimmt danach das separate
-`GEMINI_SUMMARY_MODEL`. Live-Sitzungen sind auf zehn Minuten begrenzt; längere Aufnahmen
-wechseln automatisch zum Datei-Modell.
+Standardmäßig sind die Hauptmodelle nach gemessener Geschwindigkeit geordnet; eine unabhängige
+Live-Vorschau läuft bei Telegram-Aufnahmen bis zehn Minuten parallel. Für manuelle Datei-STT:
+`MODEL_ORDER=manual` und `GEMINI_MODEL=gemini-3.5-transcribe`. Zusammenfassungen und Übersetzungen
+übernimmt danach `GEMINI_SUMMARY_MODEL`. [Modellreihenfolge](MODEL_SPEED_ORDER.md).
+
+`/settings` führt durch die Einrichtung; `/details simple|technical` steuert technische Details.
+Kurzer Kontext ist standardmäßig aus: `/context on|off|clear`.
+[Datenschutz und Grenzen](USER_SETTINGS_CONTEXT.md).
 
 ## Wichtige Befehle
 

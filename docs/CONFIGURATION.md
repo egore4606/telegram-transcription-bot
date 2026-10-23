@@ -15,7 +15,8 @@ Copy `.env.example` to `.env` and keep the real file outside version control.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | First model attempted by the fallback chain. Selected from the August 2026 load benchmark. |
+| `MODEL_ORDER` | `benchmark` | Rank the existing general models by October measured complete-result speed, per media type/length. `manual` explicitly opts out. |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Primary model only with `MODEL_ORDER=manual`; otherwise the measured benchmark chain is used. |
 | `GEMINI_SUMMARY_MODEL` | `gemini-3.5-flash` | General-purpose model used to summarize, translate, or clean output after a dedicated Gemini 3.5 Transcribe model. Must not be a Transcribe model. |
 | `MODEL_REQUEST_TIMEOUT` | `40` | Timeout for one Gemini request in seconds. |
 | `PRIMARY_MODEL_ATTEMPTS` | `1` | Attempts made with the primary model before continuing. Minimum is one. |
@@ -23,16 +24,16 @@ Copy `.env.example` to `.env` and keep the real file outside version control.
 
 The application also has a built-in fallback model chain. Keep the configured model compatible
 with your Gemini account and update the chain in `bot.py` when Google deprecates a model.
-The rationale and measurements for the current defaults are documented in
-[`GEMINI_LOAD_BENCHMARK_2026-08-14.md`](GEMINI_LOAD_BENCHMARK_2026-08-14.md).
+The rationale and exact measured medians are in [MODEL_SPEED_ORDER.md](MODEL_SPEED_ORDER.md).
+Live is an independent preview for observed Telegram jobs up to ten minutes, not a sequential
+main-chain model. Longer media skips the preview. A legacy manual Live primary maps to file STT.
 
-Set `GEMINI_MODEL=gemini-3.5-transcribe` for the dedicated file-transcription endpoint, or
-`GEMINI_MODEL=gemini-3.5-transcribe-live` to stream audio through the Live API and show an
-incremental transcript in the Telegram processing message. The dedicated models only transcribe:
-when the selected output mode also needs a summary, TL;DR, translation, or live-transcript cleanup,
-the bot passes the transcript to `GEMINI_SUMMARY_MODEL` in a separate request. Live sessions are
-limited to ten minutes by the API; longer recordings automatically use `gemini-3.5-transcribe`.
-The file endpoint accepts up to one hour. Increase `MODEL_REQUEST_TIMEOUT` for long recordings.
+For dedicated file STT, set both `MODEL_ORDER=manual` and `GEMINI_MODEL=gemini-3.5-transcribe`.
+Summary, TL;DR, translation or cleanup then use `GEMINI_SUMMARY_MODEL`. The file endpoint accepts
+up to one hour. Increase `MODEL_REQUEST_TIMEOUT` for long recordings if required.
+
+User context/UI choices are stored per private chat/group, not in environment variables;
+see [USER_SETTINGS_CONTEXT.md](USER_SETTINGS_CONTEXT.md). Context and technical details default OFF.
 
 ## Storage
 

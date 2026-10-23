@@ -62,10 +62,14 @@ docker compose -f docker-compose.ghcr.yml up -d
 
 Усі змінні описані в [довіднику конфігурації](CONFIGURATION.md).
 
-Встановіть `GEMINI_MODEL=gemini-3.5-transcribe` для файлової розшифровки або
-`GEMINI_MODEL=gemini-3.5-transcribe-live` для тексту, що оновлюється поступово. Підсумок,
-TL;DR, переклад і додаткове очищення потім виконує окрема модель із `GEMINI_SUMMARY_MODEL`.
-Live API обмежений десятьма хвилинами; довші записи автоматично переходять на файлову модель.
+Основні моделі впорядковані за виміряною швидкістю; незалежний Live-перегляд працює паралельно
+для Telegram-записів до десяти хвилин. Для ручної файлової розшифровки: `MODEL_ORDER=manual`
+і `GEMINI_MODEL=gemini-3.5-transcribe`. Підсумок і переклад потім виконує `GEMINI_SUMMARY_MODEL`.
+[Порядок моделей](MODEL_SPEED_ORDER.md).
+
+`/settings` запускає налаштування, `/details simple|technical` керує технічними подробицями.
+Короткий контекст за замовчуванням вимкнений: `/context on|off|clear`.
+[Приватність та обмеження](USER_SETTINGS_CONTEXT.md).
 
 ## Основні команди
 

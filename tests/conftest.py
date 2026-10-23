@@ -19,6 +19,7 @@ for name in (
     "INTEGRATION_API_ENABLED", "INTEGRATION_API_TOKEN", "INTEGRATION_API_HOST",
     "INTEGRATION_API_PORT", "INTEGRATION_DATABASE_PATH", "INTEGRATION_PROCESSING_TIMEOUT",
     "INTEGRATION_REQUESTS_PER_MINUTE", "ENGINE_VERSION",
+    "MODEL_ORDER",
 ):
     os.environ.pop(name, None)
 _test_directory = tempfile.TemporaryDirectory(prefix="telegrambot-offline-")

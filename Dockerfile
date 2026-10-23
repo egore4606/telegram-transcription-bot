@@ -11,7 +11,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py storage.py admin_panel.py integration_api.py ./
+COPY bot.py storage.py admin_panel.py integration_api.py user_setup.py conversation_context.py ./
 COPY templates ./templates
 
 CMD ["python", "bot.py"]

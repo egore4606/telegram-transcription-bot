@@ -56,6 +56,8 @@ flowchart LR
 
 ## Highlights
 
+- Guided first-run setup, simple/technical interface and opt-in five-minute conversation context.
+  See [settings, privacy boundaries and group permissions](docs/USER_SETTINGS_CONTEXT.md).
 - Four output modes: transcript + summary, transcript only, summary only, or TL;DR.
 - Per-chat language and transcript-style settings.
 - Separate settings for private chats and every group.
@@ -116,6 +118,7 @@ Common optional values:
 
 ```env
 GEMINI_API_KEY_2=your_backup_gemini_api_key
+MODEL_ORDER=benchmark
 GEMINI_MODEL=gemini-3.1-flash-lite
 GEMINI_SUMMARY_MODEL=gemini-3.5-flash
 MODEL_REQUEST_TIMEOUT=40
@@ -131,22 +134,19 @@ See [Configuration reference](docs/CONFIGURATION.md) for every variable and defa
 Use the dedicated file transcription model with:
 
 ```env
+MODEL_ORDER=manual
 GEMINI_MODEL=gemini-3.5-transcribe
 GEMINI_SUMMARY_MODEL=gemini-3.5-flash
 ```
 
-For incremental text while the recording is processed, select the Live API variant:
+By default, complete-result models follow the [October speed order](docs/MODEL_SPEED_ORDER.md),
+even if a legacy `GEMINI_MODEL` value is present. An independent Live preview starts alongside
+the main request for Telegram recordings up to ten minutes. It is cancelled when the full result
+is ready; longer recordings skip the preview. Selecting a legacy Live primary in manual mode
+maps it to file STT instead of starting two Live sessions.
 
-```env
-GEMINI_MODEL=gemini-3.5-transcribe-live
-GEMINI_SUMMARY_MODEL=gemini-3.5-flash
-```
-
-The Transcribe model produces the transcript. If the selected bot mode also needs a summary,
-TL;DR, translation, or cleanup, the bot sends that transcript to the separate general-purpose
-`GEMINI_SUMMARY_MODEL`. Live transcription updates the processing message with interim and final
-segments. Its API session limit is ten minutes; longer recordings automatically fall back to the
-one-hour file-transcription endpoint. The container includes FFmpeg to extract or convert audio.
+Dedicated file STT produces a transcript; summary, TL;DR, translation or cleanup then use
+`GEMINI_SUMMARY_MODEL`. The file endpoint accepts up to one hour. The container includes FFmpeg.
 
 ## Commands
 
@@ -155,7 +155,11 @@ one-hour file-transcription endpoint. The container includes FFmpeg to extract o
 
 | Command | Purpose |
 |---|---|
-| `/start`, `/help` | Welcome and usage help |
+| `/start`, `/settings` | Guided setup |
+| `/help` | Usage help |
+| `/context on\|off\|clear` | Opt-in short conversation context |
+| `/details simple\|technical` | Level of technical detail |
+| `/cancel` | Discard unfinished setup |
 | `/both` | Transcript and summary, the default |
 | `/transcription_only` | Transcript only |
 | `/summary_only` | Summary only |

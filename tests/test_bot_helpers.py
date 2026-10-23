@@ -200,17 +200,14 @@ def test_build_prompt_differs_for_voice_and_video() -> None:
     assert "что происходит на видео" in video_prompt
 
 
-def test_default_fallback_chain_matches_load_benchmark_recommendation() -> None:
-    assert bot.GEMINI_FALLBACK_MODELS == [
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash-lite",
-        "gemini-3-flash-preview",
-    ]
-    assert bot.GEMINI_MODEL_CHAIN == [bot.GEMINI_MODEL, *bot.GEMINI_FALLBACK_MODELS]
+def test_default_chain_is_benchmark_ordered_without_duplicates() -> None:
+    medians = bot.BENCHMARK_MODEL_MEDIANS["short_voice"]
+    assert bot.GEMINI_MODEL_CHAIN == sorted(medians, key=medians.get)
+    assert len(bot.GEMINI_MODEL_CHAIN) == len(set(bot.GEMINI_MODEL_CHAIN))
 
 
 def test_video_model_chain_uses_file_transcription_instead_of_live(monkeypatch) -> None:
+    monkeypatch.setattr(bot, "MODEL_ORDER", "manual")
     monkeypatch.setattr(
         bot,
         "GEMINI_MODEL_CHAIN",
@@ -218,7 +215,7 @@ def test_video_model_chain_uses_file_transcription_instead_of_live(monkeypatch) 
     )
 
     assert bot.model_chain_for_media("voice") == [
-        "gemini-3.5-transcribe-live",
+        "gemini-3.5-transcribe",
         "gemini-3.5-flash-lite",
     ]
     assert bot.model_chain_for_media("video") == [
