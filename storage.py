@@ -8,7 +8,7 @@ from typing import Any, Callable
 DEFAULT_MODE = "both"
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_TRANSCRIPTION_TYPE = "clean"
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 MIGRATION_1_SQL = """
 CREATE TABLE IF NOT EXISTS settings_scopes (
@@ -256,6 +256,18 @@ class Storage:
                 "ALTER TABLE message_processing ADD COLUMN transcription_type TEXT NOT NULL DEFAULT 'clean'"
             )
 
+    def _migration_6_interface_preferences(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""CREATE TABLE IF NOT EXISTS interface_preferences (
+            scope_type TEXT NOT NULL,
+            scope_id INTEGER NOT NULL,
+            technical_details INTEGER NOT NULL DEFAULT 0 CHECK (technical_details IN (0,1)),
+            context_enabled INTEGER NOT NULL DEFAULT 0 CHECK (context_enabled IN (0,1)),
+            setup_completed INTEGER NOT NULL DEFAULT 0 CHECK (setup_completed IN (0,1)),
+            PRIMARY KEY (scope_type, scope_id),
+            FOREIGN KEY (scope_type, scope_id) REFERENCES settings_scopes(scope_type, scope_id)
+                ON DELETE CASCADE
+        )""")
+
     def init_db(self) -> None:
         migrations: dict[int, Callable[[sqlite3.Connection], None]] = {
             1: self._migration_1_initial_schema,
@@ -263,6 +275,7 @@ class Storage:
             3: self._migration_3_changelog_broadcasts,
             4: self._migration_4_command_rate_limits,
             5: self._migration_5_transcription_type,
+            6: self._migration_6_interface_preferences,
         }
 
         with self._connect() as conn:
@@ -368,6 +381,51 @@ class Storage:
                 """,
                 (scope_type, scope_id, mode, language, transcription_type, now, now),
             )
+
+    def get_preferences(self, scope_type: str, scope_id: int) -> dict[str, bool]:
+        names = ("technical_details", "context_enabled", "setup_completed")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT technical_details, context_enabled, setup_completed "
+                "FROM interface_preferences WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            ).fetchone()
+        return {name: bool(row[name]) if row is not None else False for name in names}
+
+    def set_preference(self, scope_type: str, scope_id: int, name: str, enabled: bool) -> None:
+        if name not in {"technical_details", "context_enabled", "setup_completed"}:
+            raise ValueError("Unknown interface preference")
+        if not isinstance(enabled, bool):
+            raise ValueError("Preference must be boolean")
+        self.ensure_scope(scope_type, scope_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO interface_preferences (scope_type,scope_id,{name}) VALUES (?,?,?) "
+                f"ON CONFLICT(scope_type,scope_id) DO UPDATE SET {name}=excluded.{name}",
+                (scope_type, scope_id, int(enabled)),
+            )
+
+    def save_profile(self, scope_type: str, scope_id: int, *, mode: str, language: str,
+                     transcription_type: str, technical_details: bool, context_enabled: bool) -> None:
+        if (mode not in {"both", "transcription_only", "summary_only", "tldr"}
+                or transcription_type not in {"clean", "verbatim"}
+                or not isinstance(language, str) or not language.strip()
+                or not isinstance(technical_details, bool) or not isinstance(context_enabled, bool)):
+            raise ValueError("Invalid setup profile")
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute("INSERT INTO settings_scopes VALUES (?,?,?,?) "
+                         "ON CONFLICT(scope_type,scope_id) DO UPDATE SET updated_at=excluded.updated_at",
+                         (scope_type, scope_id, now, now))
+            conn.execute("INSERT INTO settings (scope_type,scope_id,mode,language,transcription_type,created_at,updated_at) "
+                         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id) DO UPDATE SET "
+                         "mode=excluded.mode,language=excluded.language,transcription_type=excluded.transcription_type,"
+                         "updated_at=excluded.updated_at",
+                         (scope_type, scope_id, mode, language, transcription_type, now, now))
+            conn.execute("INSERT INTO interface_preferences VALUES (?,?,?,?,1) "
+                         "ON CONFLICT(scope_type,scope_id) DO UPDATE SET technical_details=excluded.technical_details,"
+                         "context_enabled=excluded.context_enabled,setup_completed=1",
+                         (scope_type, scope_id, int(technical_details), int(context_enabled)))
 
     def set_mode(self, scope_type: str, scope_id: int, mode: str) -> None:
         _, language, transcription_type = self.get_settings(scope_type, scope_id)

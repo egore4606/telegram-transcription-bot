@@ -56,6 +56,8 @@ flowchart LR
 
 ## Highlights
 
+- Guided first-run setup, simple/technical interface and opt-in five-minute conversation context.
+  See [settings, privacy boundaries and group permissions](docs/USER_SETTINGS_CONTEXT.md).
 - Four output modes: transcript + summary, transcript only, summary only, or TL;DR.
 - Per-chat language and transcript-style settings.
 - Separate settings for private chats and every group.

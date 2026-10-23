@@ -25,7 +25,7 @@ def test_frozen_v1_upgrade_preserves_settings_history_and_is_idempotent(tmp_path
     store = Storage(str(path))
     for _ in range(2):
         store.init_db()
-        assert store.get_schema_version() == LATEST_SCHEMA_VERSION == 5
+        assert store.get_schema_version() == LATEST_SCHEMA_VERSION
         assert store.get_settings("user", 42) == ("summary_only", "de & fixture", "clean")
         detail = store.get_processing_detail(1)
         assert detail["transcription_text"] == "legacy fixture transcript"
