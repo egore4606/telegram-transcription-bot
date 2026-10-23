@@ -13,9 +13,11 @@ Baseline: `3b634e7` in production; development branch `feat/fast-live-onboarding
 - Implementation integrated in the isolated feature worktree. Full offline suite: **442 passed**, 12 existing PTB deprecation warnings; critical Ruff and diff whitespace checks passed. Credential-pattern scan found no matches.
 - Setup is owner/message/topic bound; schema 6 preserves existing settings. Context is rechecked before each model/key request, including postprocessing, with off/clear/expiry regression tests.
 - Context default OFF; group changes require a group administrator. Existing settings/data must remain intact.
+- PR #24 published. Candidate `1e2bee0` Docker image: all 442 tests pass with installed container dependencies. PR CI, CodeQL and dependency review passed on this code.
+- Migration exercised twice on an isolated private copy of the real database: schema 6, integrity OK, all 15 existing table counts and every settings row preserved. Disposable copy removed.
 
 ## Remaining verification
-- Independent security/correctness review, container execution of the suite, and GitHub CI.
+- Independent security/correctness review and CI for the final documentation/update commit.
 - PR/merge, backup, Docker rollout, runtime revision and Telegram connection checks.
 
 No live transcription acceptance or new deployment has yet occurred for this feature release.
