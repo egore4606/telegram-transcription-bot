@@ -1,5 +1,7 @@
 python-telegram-bot==22.*
 google-genai==2.*
+# google-genai 2.x declares websockets<17; PR #20's >=17 range cannot resolve.
 websockets>=13,<17
+aiohttp>=3.14.5,<4
 Flask==3.*
 waitress==3.*

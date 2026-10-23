@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+ARG ENGINE_REVISION=unversioned
+ENV ENGINE_VERSION=$ENGINE_REVISION
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
@@ -9,7 +11,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py storage.py admin_panel.py ./
+COPY bot.py storage.py admin_panel.py integration_api.py ./
 COPY templates ./templates
 
 CMD ["python", "bot.py"]

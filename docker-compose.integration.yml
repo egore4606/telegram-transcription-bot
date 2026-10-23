@@ -1,0 +1,18 @@
+# Optional override, AFTER the normal source/GHCR Compose file.
+# Requires an explicitly created private network; never publishes the API port.
+services:
+  bot:
+    environment:
+      INTEGRATION_API_ENABLED: "1"
+      INTEGRATION_API_HOST: 0.0.0.0
+      INTEGRATION_DATABASE_PATH: /data/integration.sqlite3
+    networks:
+      default: {}
+      transcription-integration:
+        aliases:
+          - transcription-engine
+
+networks:
+  transcription-integration:
+    external: true
+    name: transcription-integration

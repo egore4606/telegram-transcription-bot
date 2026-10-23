@@ -6,6 +6,7 @@ from flask import Flask, abort, render_template, request
 from waitress import serve
 
 from storage import Storage
+from integration_api import IntegrationStore
 
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/bot.sqlite3")
@@ -134,6 +135,9 @@ def create_app(db_path: str | None = None) -> Flask:
             dashboard=storage.get_dashboard_snapshot(),
             recent_processing=storage.get_recent_processing(limit=10),
             recent_errors=storage.get_recent_failed_attempts(limit=10),
+            integration_rows=IntegrationStore.recent_metadata(
+                os.environ.get("INTEGRATION_DATABASE_PATH", os.path.join(os.path.dirname(db_path or DATABASE_PATH), "integration.sqlite3"))
+            ),
         )
 
     @app.route("/history")
