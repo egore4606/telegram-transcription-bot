@@ -741,3 +741,23 @@ def test_sync_bot_commands_does_not_raise_on_bot_api_error(caplog) -> None:
     assert app.bot.set_my_commands.await_count == 2
     assert "BOT COMMAND SYNC ERROR | scope=default" in caplog.text
     assert "BOT COMMAND SYNC ERROR | scope=admin" in caplog.text
+
+
+def test_gemini_clients_pin_v1beta_api_version(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1")
+
+    built = bot.build_gemini_client("test-key-v1beta")
+
+    assert built._api_client._http_options.api_version == "v1beta"
+    assert bot.gemini_clients
+    assert all(
+        client._api_client._http_options.api_version == "v1beta"
+        for client in bot.gemini_clients
+    )
+
+
+def test_http_transport_loggers_are_silenced() -> None:
+    import logging
+
+    for logger_name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        assert logging.getLogger(logger_name).level == logging.WARNING

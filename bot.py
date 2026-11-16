@@ -32,9 +32,11 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-# Заглушить спам от httpx (getUpdates каждые 2-3 сек)
+# Заглушить спам от httpx / httpx2 (getUpdates каждые 2-3 сек и запросы Gemini SDK)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+logging.getLogger("httpcore2").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -133,11 +135,23 @@ def model_chain_for_media(media_type: str | None, duration_seconds: int = 0) -> 
         chain.sort(key=lambda model: medians.get(model, float("inf")))
     return chain
 
+GEMINI_API_VERSION = "v1beta"
+
+
+def build_gemini_client(api_key: str) -> genai.Client:
+    # google-genai 3.x changed the Developer API default from v1beta to v1;
+    # keep v1beta explicitly so preview models and interactions keep working.
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(api_version=GEMINI_API_VERSION),
+    )
+
+
 # Gemini clients — основной + резервный
-gemini_clients = [genai.Client(api_key=GEMINI_API_KEY)]
+gemini_clients = [build_gemini_client(GEMINI_API_KEY)]
 gemini_api_keys = [GEMINI_API_KEY]
 if GEMINI_API_KEY_2:
-    gemini_clients.append(genai.Client(api_key=GEMINI_API_KEY_2))
+    gemini_clients.append(build_gemini_client(GEMINI_API_KEY_2))
     gemini_api_keys.append(GEMINI_API_KEY_2)
 gemini_async_clients = [client.aio for client in gemini_clients]
 
